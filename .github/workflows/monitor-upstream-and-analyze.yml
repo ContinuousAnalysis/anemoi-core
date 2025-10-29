@@ -2,13 +2,23 @@ name: Monitor Upstream and Run Analysis
 
 on:
   schedule:
-    - cron: "*/15 * * * *"
+    - cron: "0 */6 * * *"
   workflow_dispatch:
     inputs:
       start_commit:
         description: "Start commit SHA"
         required: false
         type: string
+      skip_commits:
+        description: "Number of commits to skip between processing (skip x commits pattern)"
+        required: false
+        type: number
+        default: 0
+      skip_merge_commits:
+        description: "Skip merge commits"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   actions: write
@@ -24,7 +34,7 @@ jobs:
       BRANCH: "main"
       RUNNER_DISPATCH_TIMEOUT: 3600 # 1 hour
       FILTER_DISPATCH_TIMEOUT: 600 # 10 minutes
-      MAX_CONCURRENT: 7
+      MAX_CONCURRENT: 8
 
     steps:
       - name: Checkout the forked repo
@@ -117,41 +127,124 @@ jobs:
         id: check-commits
         run: |
           # Print the upstream repo and branch to the console
-          echo "Finding the latest 100 commits from the upstream repo: $UPSTREAM_REPO@$BRANCH"
-
-          # Get the latest 100 commits from the upstream repo and save them to a JSON file
-          curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-              "https://api.github.com/repos/${UPSTREAM_REPO}/commits?sha=${BRANCH}&per_page=100" \
-              > commits.json
-
-          # Parse the first commit SHA from the JSON file for sanity check
-          if ! jq -e '.[0].sha' commits.json > /dev/null; then
-            echo "Failed to parse SHA from commits.json"
-            exit 1
-          fi
-
-          # Parse all commit SHAs (from newest to oldest) from the JSON file and save to all_commits.txt
-          jq -r '.[].sha' commits.json > all_commits.txt
+          echo "Searching all commits from the upstream repo: $UPSTREAM_REPO@$BRANCH"
 
           # Get the last seen SHA from the previous step
           LAST_SEEN="${{ steps.last-sha.outputs.last_sha }}"
           echo "Last seen SHA: $LAST_SEEN"
 
-          # If the last seen SHA is empty, select the latest commit SHA
+          # Initialize variables for pagination
+          page=1
+          per_page=100
+          all_commits_tmp="all_commits_tmp.txt"
+          > "$all_commits_tmp"  # Initialize empty file
+          found_last_seen=false
+
+          # Fetch commits page by page(100 commits per page) until the last seen SHA is found or all commits are fetched
+          while true; do
+            echo "Fetching page $page (commits $((($page-1)*$per_page + 1))-$(($page*$per_page)))..."
+            
+            # Get commits for current page
+            curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+                "https://api.github.com/repos/${UPSTREAM_REPO}/commits?sha=${BRANCH}&per_page=${per_page}&page=${page}" \
+                > "commits_page_${page}.json"
+
+            # Check if the returned page has any commits
+            if ! jq -e '.[0].sha' "commits_page_${page}.json" > /dev/null 2>&1; then
+              echo "No more commits found (end of repository history)"
+              break
+            fi
+
+            # Parse commit SHAs from this page and append to temp file
+            # If skip_merge_commits is true, skip merge commits
+            # Otherwise, include all commits
+            SKIP_MERGE="${{ inputs.skip_merge_commits }}"
+            if [[ -z "$SKIP_MERGE" || "$SKIP_MERGE" == "true" ]]; then
+              jq -r '.[] | select(.parents | length <= 1) | .sha' "commits_page_${page}.json" >> "$all_commits_tmp"
+              echo "Skipping merge commits (parents > 1)"
+            else
+              jq -r '.[] | .sha' "commits_page_${page}.json" >> "$all_commits_tmp"
+              echo "Including all commits (including merges)"
+            fi
+
+            # Check if the last seen SHA is found in this page
+            if [[ -n "$LAST_SEEN" ]]; then
+              if grep -q "^${LAST_SEEN}$" "$all_commits_tmp"; then
+                echo "Found last seen SHA in page $page"
+                found_last_seen=true
+                break
+              fi
+            fi
+
+            # Check if fewer commits than requested are returned (indicates last page)
+            commits_count=$(jq length "commits_page_${page}.json")
+            if [[ "$commits_count" -lt "$per_page" ]]; then
+              echo "Reached end of repository history (got $commits_count commits in page $page)"
+              break
+            fi
+
+            # Increment the page number to fetch the next page
+            page=$((page + 1))
+          done
+
+          # Move the collected commits to final file
+          mv "$all_commits_tmp" all_commits.txt
+          
+          # Clean up temporary page files
+          rm -f commits_page_*.json
+          
+          # Verify that commits are fetched
+          if [[ ! -s all_commits.txt ]]; then
+            echo "Failed to fetch any commits"
+            exit 1
+          fi
+
+          # Get the total number of commits fetched
+          total_commits=$(wc -l < all_commits.txt)
+          echo "Total commits fetched: $total_commits"
+          
+          # Check if the last seen SHA is found in the commit history
+          if [[ -n "$LAST_SEEN" ]]; then
+            if [[ "$found_last_seen" == "true" ]]; then
+              echo "Last seen SHA found in commit history"
+            else
+              echo "Warning: Last seen SHA not found in the first $total_commits commits"
+            fi
+          fi
+
+          # Get the skip_commits input (default to 0 if not provided)
+          SKIP_COMMITS="${{ inputs.skip_commits }}"
+          if [[ -z "$SKIP_COMMITS" || "$SKIP_COMMITS" -lt 0 ]]; then
+            SKIP_COMMITS=0
+          fi
+          echo "Skip commits setting: $SKIP_COMMITS"
+
+          # If the last seen SHA is empty, always select the latest commit SHA regardless of skip pattern
           if [[ -z "$LAST_SEEN" ]]; then
             head -n 1 all_commits.txt > new_commits.txt
-            echo "has_new_commits=true" >> $GITHUB_OUTPUT
             echo "First-time run — selecting the latest commit: $(head -n 1 all_commits.txt)"
+            echo "has_new_commits=true" >> $GITHUB_OUTPUT
           else
             # If the last seen SHA is not empty, filter out previously seen commits
-            # Print all new commit SHAs (above the last seen SHA) to new_commits.txt
-            awk -v sha="$LAST_SEEN" '$0 ~ sha {exit} {print}' all_commits.txt > new_commits.txt
+            # Print all new commit SHAs (above the last seen SHA) to temp_new_commits.txt
+            awk -v sha="$LAST_SEEN" '$0 ~ sha {exit} {print}' all_commits.txt > temp_new_commits.txt
 
-            if [ ! -s new_commits.txt ]; then
+            if [ ! -s temp_new_commits.txt ]; then
               echo "No new commits to process."
+              rm -f temp_new_commits.txt
+              touch new_commits.txt  # Create empty file for consistency
               echo "has_new_commits=false" >> $GITHUB_OUTPUT
             else
-              echo "New commits to process:"
+              if [[ "$SKIP_COMMITS" -eq 0 ]]; then
+                # Normal behavior: process all new commits
+                mv temp_new_commits.txt new_commits.txt
+                echo "New commits to process (all commits):"
+              else
+                # Skip pattern: select every (SKIP_COMMITS + 1)th commit from new commits
+                awk "NR % ($SKIP_COMMITS + 1) == 1" temp_new_commits.txt > new_commits.txt
+                rm -f temp_new_commits.txt  # Clean up temp file
+                echo "New commits to process (skip pattern - every $(($SKIP_COMMITS + 1))th commit):"
+              fi
               echo "has_new_commits=true" >> $GITHUB_OUTPUT
               cat new_commits.txt
             fi
@@ -171,6 +264,7 @@ jobs:
           fi
 
       - name: Trigger analysis workflows for new commits in parallel
+        if: steps.check-commits.outputs.has_new_commits == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -304,6 +398,7 @@ jobs:
           echo "All ${total_commits} workflows completed successfully across all batches!"
 
       - name: Trigger violation filter workflows for new commits in sequence
+        if: steps.check-commits.outputs.has_new_commits == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
