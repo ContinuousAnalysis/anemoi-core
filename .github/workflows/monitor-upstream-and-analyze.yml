@@ -18,7 +18,7 @@ on:
         description: "Skip merge commits"
         required: false
         type: boolean
-        default: false
+        default: true
 
 permissions:
   actions: write
@@ -453,7 +453,8 @@ jobs:
               --ref "${{ env.BRANCH }}" \
               --field current_commit="$current_commit" \
               --field previous_commit="$previous_commit" \
-              --field dispatch_id="$dispatch_id"
+              --field dispatch_id="$dispatch_id" \
+              --field skip_commits_pattern="${{ inputs.skip_commits }}"
 
             # Wait for this workflow to complete
             echo "Waiting for violation filter workflow to complete for commit: $current_commit"
