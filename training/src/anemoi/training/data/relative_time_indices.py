@@ -87,10 +87,7 @@ def normalize_dataset_time_offsets_config(
         if raw_target_offsets is None:
             raw_target_offsets = _config_get(dataset_cfg, "target")
         if raw_input_offsets is None or raw_target_offsets is None:
-            msg = (
-                f"Dataset '{dataset_name}' sparse offsets must define both "
-                "`input_offsets` and `target_offsets`."
-            )
+            msg = f"Dataset '{dataset_name}' sparse offsets must define both `input_offsets` and `target_offsets`."
             raise ValueError(msg)
 
         input_indices = np.array(sorted({int(value) for value in raw_input_offsets}), dtype=np.int64)
@@ -236,10 +233,7 @@ def _parse_dataset_time_offsets(
     if raw_target_offsets is None:
         raw_target_offsets = _config_get(dataset_cfg, "target")
     if raw_input_offsets is None or raw_target_offsets is None:
-        msg = (
-            f"`dataset_time_offsets[{dataset_name}]` must define both "
-            "`input_offsets` and `target_offsets`."
-        )
+        msg = f"`dataset_time_offsets[{dataset_name}]` must define both `input_offsets` and `target_offsets`."
         raise ValueError(msg)
 
     parsed_dataset_cfg = {

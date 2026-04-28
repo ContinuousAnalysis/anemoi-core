@@ -87,9 +87,11 @@ class SparseForecasterSchema(BaseModel):
     "Number of rollouts to use for validation."
     rollout_forcing_policy: Literal["last_available", "exact"] = Field(default="last_available")
     "How sparse rollout fills missing coarse timesteps during autoregressive updates."
-    dataset_time_offsets: SparseDatasetTimeOffsetsConfigSchema | dict[str, SparseDatasetTimeOffsetsSchema] | None = Field(
-        default=None,
-        validation_alias=AliasChoices("dataset_time_offsets", "dataset_time_indices"),
+    dataset_time_offsets: SparseDatasetTimeOffsetsConfigSchema | dict[str, SparseDatasetTimeOffsetsSchema] | None = (
+        Field(
+            default=None,
+            validation_alias=AliasChoices("dataset_time_offsets", "dataset_time_indices"),
+        )
     )
     "Optional per-dataset sparse input and target offsets for mixed-frequency loading."
 
