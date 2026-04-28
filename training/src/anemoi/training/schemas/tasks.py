@@ -10,6 +10,7 @@
 from typing import Annotated
 from typing import Literal
 
+from pydantic import AliasChoices
 from pydantic import Discriminator
 from pydantic import Field
 from pydantic import NonNegativeInt
@@ -46,6 +47,29 @@ class ForecasterSchema(BaseModel):
     "Number of rollouts to use for validation."
 
 
+class SparseDatasetTimeOffsetsSchema(BaseModel):
+    """Per-dataset sparse offsets for mixed-frequency loading."""
+
+    input_offsets: list[int | str] = Field(
+        validation_alias=AliasChoices("input_offsets", "input"),
+        examples=[[0]],
+    )
+    "Offsets to load as model inputs for this dataset."
+    target_offsets: list[int | str] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("target_offsets", "target"),
+        examples=[["5m", "10m"]],
+    )
+    "Offsets to load as model targets for this dataset."
+
+
+class SparseDatasetTimeOffsetsConfigSchema(BaseModel):
+    """Sparse offsets keyed by dataset name."""
+
+    datasets: dict[str, SparseDatasetTimeOffsetsSchema]
+    "Per-dataset sparse offsets."
+
+
 class SparseForecasterSchema(BaseModel):
     """Configuration for sparse forecasting tasks."""
 
@@ -63,6 +87,11 @@ class SparseForecasterSchema(BaseModel):
     "Number of rollouts to use for validation."
     rollout_forcing_policy: Literal["last_available", "exact"] = Field(default="last_available")
     "How sparse rollout fills missing coarse timesteps during autoregressive updates."
+    dataset_time_offsets: SparseDatasetTimeOffsetsConfigSchema | dict[str, SparseDatasetTimeOffsetsSchema] | None = Field(
+        default=None,
+        validation_alias=AliasChoices("dataset_time_offsets", "dataset_time_indices"),
+    )
+    "Optional per-dataset sparse input and target offsets for mixed-frequency loading."
 
 
 class AutoencoderTaskSchema(BaseModel):

@@ -23,7 +23,7 @@ from anemoi.training.data.data_reader import create_dataset
 from anemoi.training.data.multidataset import MultiDataset
 from anemoi.training.data.relative_time_indices import compute_model_relative_date_indices
 from anemoi.training.data.relative_time_indices import compute_relative_date_indices
-from anemoi.training.data.relative_time_indices import parse_dataset_time_indices_config
+from anemoi.training.data.relative_time_indices import parse_dataset_time_offsets_config
 from anemoi.training.data.relative_time_indices import resolve_config_timestep
 from anemoi.training.data.relative_time_indices import resolve_relative_date_indices
 from anemoi.training.utils.worker_init import worker_init_func
@@ -152,7 +152,7 @@ class AnemoiDatasetsDataModule(pl.LightningDataModule):
         debug_cfg = getattr(self.config.dataloader, "debug", {})
         time_index_mode = getattr(debug_cfg, "time_index_mode", "dense")
         time_index_anchor_dataset = getattr(debug_cfg, "time_index_anchor_dataset", None)
-        dataset_time_indices = parse_dataset_time_indices_config(self.config)
+        dataset_time_offsets = parse_dataset_time_offsets_config(self.config)
         data_readers = {name: create_dataset(data_reader, task=self.task) for name, data_reader in config.items()}
         model_relative_date_indices = compute_model_relative_date_indices(self.task, mode=label)
         relative_date_indices: list | dict[str, list[int]]
@@ -165,7 +165,7 @@ class AnemoiDatasetsDataModule(pl.LightningDataModule):
             relative_date_indices=relative_date_indices,
             timestep=self.config_timestep,
             multistep_window=getattr(self.config.training, "multistep_window", None),
-            explicit_time_indices_by_dataset=dataset_time_indices,
+            dataset_time_offsets_by_dataset=dataset_time_offsets,
             time_index_mode=time_index_mode,
             time_index_anchor_dataset=time_index_anchor_dataset,
             shuffle=shuffle,

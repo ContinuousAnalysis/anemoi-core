@@ -74,22 +74,29 @@ def compute_relative_date_indices(
     return relative_date_indices
 
 
-def normalize_explicit_time_indices_config(
-    explicit_time_indices_by_dataset: dict[str, dict[str, list[int]]] | None,
+def normalize_dataset_time_offsets_config(
+    dataset_time_offsets_by_dataset: dict[str, dict[str, list[int]]] | None,
 ) -> dict[str, dict[str, np.ndarray]]:
-    """Normalize per-dataset sparse windows to the legacy positive index convention."""
+    """Normalize per-dataset sparse offsets to positive model-relative indices."""
     normalized: dict[str, dict[str, np.ndarray]] = {}
-    for dataset_name, dataset_cfg in (explicit_time_indices_by_dataset or {}).items():
-        raw_input = dataset_cfg.get("input", None)
-        raw_target = dataset_cfg.get("target", None)
-        if raw_input is None or raw_target is None:
-            msg = f"Explicit time indices for dataset '{dataset_name}' must define both `input` and `target`."
+    for dataset_name, dataset_cfg in (dataset_time_offsets_by_dataset or {}).items():
+        raw_input_offsets = _config_get(dataset_cfg, "input_offsets")
+        if raw_input_offsets is None:
+            raw_input_offsets = _config_get(dataset_cfg, "input")
+        raw_target_offsets = _config_get(dataset_cfg, "target_offsets")
+        if raw_target_offsets is None:
+            raw_target_offsets = _config_get(dataset_cfg, "target")
+        if raw_input_offsets is None or raw_target_offsets is None:
+            msg = (
+                f"Dataset '{dataset_name}' sparse offsets must define both "
+                "`input_offsets` and `target_offsets`."
+            )
             raise ValueError(msg)
 
-        input_indices = np.array(sorted({int(value) for value in raw_input}), dtype=np.int64)
-        target_indices = np.array(sorted({int(value) for value in raw_target}), dtype=np.int64)
+        input_indices = np.array(sorted({int(value) for value in raw_input_offsets}), dtype=np.int64)
+        target_indices = np.array(sorted({int(value) for value in raw_target_offsets}), dtype=np.int64)
         if len(input_indices) == 0:
-            msg = f"Explicit time indices for dataset '{dataset_name}' require a non-empty `input`."
+            msg = f"Dataset '{dataset_name}' sparse offsets require a non-empty `input_offsets`."
             raise ValueError(msg)
 
         combined_indices = (
@@ -103,8 +110,8 @@ def normalize_explicit_time_indices_config(
             target_indices = target_indices + anchor_index
 
         normalized[str(dataset_name)] = {
-            "input": input_indices,
-            "target": target_indices,
+            "input_offsets": input_indices,
+            "target_offsets": target_indices,
         }
     return normalized
 
@@ -144,14 +151,21 @@ def resolve_config_timestep(config: BaseSchema) -> str:
     raise ValueError(msg)
 
 
-def _get_dataset_time_indices_config(config: BaseSchema) -> object | None:
-    """Get sparse time-index config from the task or legacy training section."""
-    cfg = getattr(getattr(config, "task", None), "dataset_time_indices", None)
+def _get_dataset_time_offsets_config(config: BaseSchema) -> object | None:
+    """Get sparse per-dataset offsets from the task or legacy training section."""
+    task_cfg = _config_get(config, "task")
+    cfg = _config_get(task_cfg, "dataset_time_offsets")
     if cfg is None:
-        cfg = getattr(getattr(config, "training", None), "dataset_time_indices", None)
+        cfg = _config_get(task_cfg, "dataset_time_indices")
+    if cfg is None:
+        training_cfg = _config_get(config, "training")
+        cfg = _config_get(training_cfg, "dataset_time_offsets")
+    if cfg is None:
+        training_cfg = _config_get(config, "training")
+        cfg = _config_get(training_cfg, "dataset_time_indices")
     if cfg is None:
         return None
-    return cfg.get("datasets", cfg)
+    return _config_get(cfg, "datasets") or cfg
 
 
 def _parse_time_index_value(
@@ -162,7 +176,7 @@ def _parse_time_index_value(
     timestep_seconds: int,
     timestep: str,
 ) -> int:
-    """Parse one sparse time-index entry."""
+    """Parse one sparse time-offset entry."""
     if isinstance(raw_value, Integral):
         return int(raw_value)
 
@@ -172,14 +186,14 @@ def _parse_time_index_value(
         offset_seconds = frequency_to_seconds(raw_value)
     except (AssertionError, TypeError, ValueError) as exc:
         msg = (
-            f"`training.dataset_time_indices[{dataset_name}].{field_name}` value {raw_value!r} "
+            f"`dataset_time_offsets[{dataset_name}].{field_name}` value {raw_value!r} "
             "must be either an integer step or a duration like '-5m' or '1h'."
         )
         raise ValueError(msg) from exc
 
     if offset_seconds % timestep_seconds != 0:
         msg = (
-            f"`training.dataset_time_indices[{dataset_name}].{field_name}` value {raw_value!r} "
+            f"`dataset_time_offsets[{dataset_name}].{field_name}` value {raw_value!r} "
             f"is not an exact multiple of timestep {timestep!r}."
         )
         raise ValueError(msg)
@@ -194,7 +208,7 @@ def _parse_time_index_values(
     timestep_seconds: int,
     timestep: str,
 ) -> list[int]:
-    """Parse one sparse time-index field for a dataset."""
+    """Parse one sparse time-offset field for a dataset."""
     return [
         _parse_time_index_value(
             raw_value,
@@ -207,45 +221,52 @@ def _parse_time_index_values(
     ]
 
 
-def _parse_dataset_time_indices(
+def _parse_dataset_time_offsets(
     dataset_name: str,
     dataset_cfg: object,
     *,
     timestep_seconds: int,
     timestep: str,
 ) -> dict[str, list[int]]:
-    """Parse sparse input/target windows for one dataset."""
-    raw_input = dataset_cfg.get("input", None)
-    raw_target = dataset_cfg.get("target", None)
-    if raw_input is None or raw_target is None:
-        msg = f"`training.dataset_time_indices[{dataset_name}]` must define both `input` and `target`."
+    """Parse sparse input and target offsets for one dataset."""
+    raw_input_offsets = _config_get(dataset_cfg, "input_offsets")
+    if raw_input_offsets is None:
+        raw_input_offsets = _config_get(dataset_cfg, "input")
+    raw_target_offsets = _config_get(dataset_cfg, "target_offsets")
+    if raw_target_offsets is None:
+        raw_target_offsets = _config_get(dataset_cfg, "target")
+    if raw_input_offsets is None or raw_target_offsets is None:
+        msg = (
+            f"`dataset_time_offsets[{dataset_name}]` must define both "
+            "`input_offsets` and `target_offsets`."
+        )
         raise ValueError(msg)
 
     parsed_dataset_cfg = {
-        "input": _parse_time_index_values(
-            raw_input,
+        "input_offsets": _parse_time_index_values(
+            raw_input_offsets,
             dataset_name=dataset_name,
-            field_name="input",
+            field_name="input_offsets",
             timestep_seconds=timestep_seconds,
             timestep=timestep,
         ),
-        "target": _parse_time_index_values(
-            raw_target,
+        "target_offsets": _parse_time_index_values(
+            raw_target_offsets,
             dataset_name=dataset_name,
-            field_name="target",
+            field_name="target_offsets",
             timestep_seconds=timestep_seconds,
             timestep=timestep,
         ),
     }
-    if len(parsed_dataset_cfg["input"]) == 0:
-        msg = f"`training.dataset_time_indices[{dataset_name}]` requires a non-empty `input` list."
+    if len(parsed_dataset_cfg["input_offsets"]) == 0:
+        msg = f"`dataset_time_offsets[{dataset_name}]` requires a non-empty `input_offsets` list."
         raise ValueError(msg)
     return parsed_dataset_cfg
 
 
-def parse_dataset_time_indices_config(config: BaseSchema) -> dict[str, dict[str, list[int]]] | None:
-    """Parse optional per-dataset sparse time windows from config."""
-    cfg = _get_dataset_time_indices_config(config)
+def parse_dataset_time_offsets_config(config: BaseSchema) -> dict[str, dict[str, list[int]]] | None:
+    """Parse optional per-dataset sparse offsets from config."""
+    cfg = _get_dataset_time_offsets_config(config)
     if cfg is None:
         return None
 
@@ -253,18 +274,18 @@ def parse_dataset_time_indices_config(config: BaseSchema) -> dict[str, dict[str,
     timestep_seconds = frequency_to_seconds(config_timestep)
     parsed: dict[str, dict[str, list[int]]] = {}
     for dataset_name, dataset_cfg in cfg.items():
-        parsed[str(dataset_name)] = _parse_dataset_time_indices(
+        parsed[str(dataset_name)] = _parse_dataset_time_offsets(
             str(dataset_name),
             dataset_cfg,
             timestep_seconds=timestep_seconds,
             timestep=config_timestep,
         )
 
-    normalized = normalize_explicit_time_indices_config(parsed)
+    normalized = normalize_dataset_time_offsets_config(parsed)
     return {
         dataset_name: {
-            "input": dataset_cfg["input"].tolist(),
-            "target": dataset_cfg["target"].tolist(),
+            "input_offsets": dataset_cfg["input_offsets"].tolist(),
+            "target_offsets": dataset_cfg["target_offsets"].tolist(),
         }
         for dataset_name, dataset_cfg in normalized.items()
     } or None
@@ -344,12 +365,12 @@ def resolve_relative_date_indices(
             logger=logger,
         ),
     )
-    dataset_time_indices = parse_dataset_time_indices_config(config)
-    if dataset_time_indices is None:
+    dataset_time_offsets = parse_dataset_time_offsets_config(config)
+    if dataset_time_offsets is None:
         return sorted(relative_indices)
 
-    for dataset_cfg in dataset_time_indices.values():
-        relative_indices.update(int(value) for value in dataset_cfg["input"])
-        relative_indices.update(int(value) for value in dataset_cfg["target"])
+    for dataset_cfg in dataset_time_offsets.values():
+        relative_indices.update(int(value) for value in dataset_cfg["input_offsets"])
+        relative_indices.update(int(value) for value in dataset_cfg["target_offsets"])
 
     return sorted(relative_indices)

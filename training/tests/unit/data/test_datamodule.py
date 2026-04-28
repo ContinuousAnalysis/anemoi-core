@@ -61,6 +61,59 @@ def test_datamodule_relative_date_indices_follow_task_config_for_sparse_forecast
     assert datamodule.relative_date_indices() == [0, 1, 2, 3]
 
 
+def test_datamodule_relative_date_indices_include_sparse_dataset_time_offsets() -> None:
+    cfg = OmegaConf.create(
+        {
+            "data": {
+                "timestep": "5m",
+                "datasets": {
+                    "meps": {"forcing": ["forcing_var"], "diagnostic": [], "target": []},
+                    "nordic_radar": {"forcing": ["forcing_var"], "diagnostic": [], "target": []},
+                },
+            },
+            "task": {
+                "_target_": "anemoi.training.tasks.SparseForecaster",
+                "multistep_input": 1,
+                "multistep_output": 1,
+                "timestep": "5m",
+                "rollout": {"start": 1, "epoch_increment": 0, "maximum": 1},
+                "validation_rollout": 1,
+                "dataset_time_offsets": {
+                    "datasets": {
+                        "meps": {"input_offsets": [0], "target_offsets": []},
+                        "nordic_radar": {"input_offsets": [0], "target_offsets": ["15m"]},
+                    },
+                },
+            },
+            "dataloader": {
+                "pin_memory": False,
+                "training": {
+                    "datasets": {
+                        "meps": {"dataset_config": {"dataset": "meps_source", "frequency": "1h"}, "end": "2020-01-02"},
+                        "nordic_radar": {
+                            "dataset_config": {"dataset": "radar_source", "frequency": "5m"},
+                            "end": "2020-01-02",
+                        },
+                    },
+                },
+                "validation": {"datasets": {}},
+                "test": {"datasets": {}},
+            },
+            "training": {},
+        },
+    )
+
+    task = SparseForecaster(
+        multistep_input=1,
+        multistep_output=1,
+        timestep="5m",
+        rollout={"start": 1, "epoch_increment": 0, "maximum": 1},
+    )
+    datamodule = AnemoiDatasetsDataModule(config=cfg, task=task)
+
+    assert datamodule.relative_date_indices() == [0, 1, 3]
+
+
 def test_datamodule_timestep_falls_back_to_task_when_data_timestep_is_missing() -> None:
     cfg = OmegaConf.create(
         {

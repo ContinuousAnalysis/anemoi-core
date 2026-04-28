@@ -58,6 +58,12 @@ def build_sparse_forecaster_config() -> DictConfig:
                 "timestep": "5m",
                 "rollout": {"start": 1, "epoch_increment": 0, "maximum": 3},
                 "validation_rollout": 1,
+                "dataset_time_offsets": {
+                    "datasets": {
+                        "meps": {"input_offsets": [0], "target_offsets": []},
+                        "nordic_radar": {"input_offsets": [0], "target_offsets": ["5m", "10m", "15m"]},
+                    },
+                },
             },
             "dataloader": {
                 "pin_memory": False,

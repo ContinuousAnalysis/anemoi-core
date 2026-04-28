@@ -26,7 +26,7 @@ from anemoi.training.data import usable_indices
 from anemoi.training.data.data_reader import RelativeTimeReader
 from anemoi.training.data.data_reader import create_dataset
 from anemoi.training.data.data_reader import dates_to_unix_ns
-from anemoi.training.data.relative_time_indices import normalize_explicit_time_indices_config
+from anemoi.training.data.relative_time_indices import normalize_dataset_time_offsets_config
 from anemoi.training.utils.seeding import get_base_seed
 from anemoi.utils.dates import frequency_to_seconds
 
@@ -45,7 +45,7 @@ class MultiDataset(IterableDataset):
         multistep_window: str | datetime.timedelta | None = None,
         dataset_num_inputs: dict[str, int] | None = None,
         dataset_input_selection: dict[str, str] | None = None,
-        explicit_time_indices_by_dataset: dict[str, dict[str, list[int]]] | None = None,
+        dataset_time_offsets_by_dataset: dict[str, dict[str, list[int]]] | None = None,
         time_index_mode: str = "dense",
         time_index_anchor_dataset: str | None = None,
         shuffle: bool = True,
@@ -117,8 +117,8 @@ class MultiDataset(IterableDataset):
             raise ValueError(msg)
         self.time_index_mode = parsed_time_index_mode
         self.time_index_anchor_dataset = str(time_index_anchor_dataset) if time_index_anchor_dataset else None
-        self.explicit_time_indices_by_dataset = normalize_explicit_time_indices_config(
-            explicit_time_indices_by_dataset,
+        self.dataset_time_offsets_by_dataset = normalize_dataset_time_offsets_config(
+            dataset_time_offsets_by_dataset,
         )
         if self.multistep_window is None:
             self.multistep_window_seconds = None
@@ -632,21 +632,21 @@ class MultiDataset(IterableDataset):
                 if self.relative_date_indices_by_dataset is not None
                 else self.model_relative_date_indices
             )
-            explicit_cfg = self.explicit_time_indices_by_dataset.get(name)
+            dataset_time_offsets_cfg = self.dataset_time_offsets_by_dataset.get(name)
             if self.relative_date_indices_are_native:
                 model_indices = requested_model_indices.astype(np.int64, copy=False)
                 input_model_indices = model_indices
                 target_model_indices = np.array([], dtype=np.int64)
-            elif explicit_cfg is not None:
-                input_model_indices = explicit_cfg["input"].astype(np.int64, copy=False)
-                target_model_indices = explicit_cfg["target"].astype(np.int64, copy=False)
+            elif dataset_time_offsets_cfg is not None:
+                input_model_indices = dataset_time_offsets_cfg["input_offsets"].astype(np.int64, copy=False)
+                target_model_indices = dataset_time_offsets_cfg["target_offsets"].astype(np.int64, copy=False)
                 model_indices = np.unique(
                     np.concatenate([input_model_indices, target_model_indices]).astype(np.int64, copy=False),
                 ).astype(np.int64, copy=False)
                 rel_seconds = model_indices * self.timestep_seconds
                 if np.any(rel_seconds % dataset_frequency_seconds != 0):
                     msg = (
-                        f"Dataset '{name}' explicit time indices {model_indices.tolist()} are not exact native "
+                        f"Dataset '{name}' sparse offsets {model_indices.tolist()} are not exact native "
                         f"timestamps for dataset frequency {ds.frequency}."
                     )
                     raise ValueError(msg)
@@ -679,12 +679,13 @@ class MultiDataset(IterableDataset):
                 model_indices.tolist(),
             )
 
-        unknown_explicit_dataset_keys = sorted(
-            set(self.explicit_time_indices_by_dataset).difference(set(self.dataset_names)),
+        unknown_dataset_time_offset_keys = sorted(
+            set(self.dataset_time_offsets_by_dataset).difference(set(self.dataset_names)),
         )
-        if unknown_explicit_dataset_keys:
+        if unknown_dataset_time_offset_keys:
             msg = (
-                f"`explicit_time_indices_by_dataset` provided for unknown datasets: {unknown_explicit_dataset_keys}. "
+                f"`dataset_time_offsets_by_dataset` provided for unknown datasets: "
+                f"{unknown_dataset_time_offset_keys}. "
                 f"Known datasets: {self.dataset_names}"
             )
             raise ValueError(msg)
