@@ -7,8 +7,8 @@
 # granted to it by virtue of its status as an intergovernmental organisation
 # nor does it submit to any jurisdiction.
 
-from typing import Any
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 from omegaconf import DictConfig

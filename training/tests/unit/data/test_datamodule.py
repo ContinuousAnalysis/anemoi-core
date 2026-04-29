@@ -11,8 +11,8 @@ import logging
 from typing import Any
 
 import numpy as np
+import pytest
 from omegaconf import OmegaConf
-from pytest import LogCaptureFixture
 from pytest_mock import MockFixture
 
 from anemoi.training.data.datamodule import AnemoiDatasetsDataModule
@@ -240,7 +240,7 @@ def test_datamodule_timestep_falls_back_to_task_when_data_timestep_is_missing() 
 
 def test_datamodule_dense_mode_keeps_aligned_frequencies_without_reopening(
     mocker: MockFixture,
-    caplog: LogCaptureFixture,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     cfg = make_multidataset_cfg(meps_frequency="5m", radar_frequency="5m", time_index_mode="dense")
     created_frequencies: list[str] = []
@@ -274,7 +274,7 @@ def test_datamodule_dense_mode_keeps_aligned_frequencies_without_reopening(
 
 def test_datamodule_dense_mode_interpolates_coarser_datasets(
     mocker: MockFixture,
-    caplog: LogCaptureFixture,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     cfg = make_multidataset_cfg(meps_frequency="1h", radar_frequency="5m", time_index_mode="dense")
     created_configs: list[dict[str, Any]] = []

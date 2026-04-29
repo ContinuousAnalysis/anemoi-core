@@ -165,7 +165,9 @@ class AnemoiDatasetsDataModule(pl.LightningDataModule):
                     for name, reader in data_readers.items()
                 )
                 coarse_dataset_names = [
-                    name for name, seconds in frequency_seconds.items() if seconds != frequency_seconds[finest_dataset_name]
+                    name
+                    for name, seconds in frequency_seconds.items()
+                    if seconds != frequency_seconds[finest_dataset_name]
                 ]
                 LOGGER.warning(
                     "Dense time-index mode requested for %s data with mixed dataset frequencies (%s). "
