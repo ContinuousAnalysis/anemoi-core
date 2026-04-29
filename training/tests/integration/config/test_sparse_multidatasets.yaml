@@ -18,8 +18,8 @@ data:
 
 task:
   _target_: anemoi.training.tasks.Forecaster
-  multistep_input: 1
-  multistep_output: 1
+  multistep_input: 1 # derived from len(input_offsets) per dataset
+  multistep_output: 1 # derived from len(target_offset)/rollout
   timestep: "5m"
   rollout:
     # fixed 3-step rollout window for this sparse metadata test
