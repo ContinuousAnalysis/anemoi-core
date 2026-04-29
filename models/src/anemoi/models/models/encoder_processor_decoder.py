@@ -319,7 +319,7 @@ class AnemoiModelEncProcDec(BaseGraphModel):
         for dataset in self.input_dim.keys():
             shapes = {
                 "variables": self.input_dim[dataset],
-                "input_timesteps": self.n_step_input,
+                "input_timesteps": self.n_step_input_by_dataset[dataset],
                 "ensemble": 1,
                 "grid": None,  # grid size is dynamic
             }

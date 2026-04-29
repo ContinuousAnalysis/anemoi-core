@@ -38,6 +38,7 @@ class AnemoiEnsModelEncProcDec(AnemoiModelEncProcDec):
         graph_data: HeteroData,
         n_step_input: int,
         n_step_output: int,
+        n_step_input_by_dataset: dict[str, int] | None = None,
     ) -> None:
         self.condition_on_residual = DotDict(model_config).model.condition_on_residual
         super().__init__(
@@ -47,6 +48,7 @@ class AnemoiEnsModelEncProcDec(AnemoiModelEncProcDec):
             graph_data=graph_data,
             n_step_input=n_step_input,
             n_step_output=n_step_output,
+            n_step_input_by_dataset=n_step_input_by_dataset,
         )
 
     def _build_networks(self, model_config):

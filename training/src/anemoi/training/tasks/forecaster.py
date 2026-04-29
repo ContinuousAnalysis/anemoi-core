@@ -15,6 +15,7 @@ from collections.abc import Mapping
 import torch
 
 from anemoi.models.data_indices.collection import IndexCollection
+from anemoi.training.data.relative_time_indices import parse_dataset_time_offsets
 from anemoi.training.diagnostics.callbacks.plot_adapter import ForecasterPlotAdapter
 from anemoi.training.tasks.base import BaseTask
 from anemoi.utils.dates import frequency_to_string
@@ -71,8 +72,6 @@ class Forecaster(BaseTask):
     ) -> None:
 
         self.timestep = frequency_to_timedelta(timestep)
-        self.num_input_steps = multistep_input
-        self.num_output_steps = multistep_output
         self.rollout = RolloutConfig(**(rollout or {}))
         self.validation_rollout = validation_rollout
         if rollout_forcing_policy not in {"last_available", "exact"}:
@@ -82,7 +81,19 @@ class Forecaster(BaseTask):
             )
             raise ValueError(msg)
         self.rollout_forcing_policy = rollout_forcing_policy
-        self.dataset_time_offsets = dataset_time_offsets
+        self.dataset_time_offsets = parse_dataset_time_offsets(dataset_time_offsets, timestep=self.timestep)
+        self.dataset_input_relative_times_by_dataset: dict[str, list[int]] = {}
+        self.dataset_target_relative_times_by_dataset: dict[str, list[int]] = {}
+        self.dataset_target_relative_times_by_step: dict[str, tuple[tuple[int, ...], ...]] = {}
+        self.num_input_timesteps_by_dataset: dict[str, int] = {}
+        self._reference_input_relative_times: list[int] | None = None
+        self._reference_output_relative_times_by_step: tuple[tuple[int, ...], ...] | None = None
+        multistep_input, multistep_output = self._derive_sparse_layout(
+            multistep_input=multistep_input,
+            multistep_output=multistep_output,
+        )
+        self.num_input_steps = multistep_input
+        self.num_output_steps = multistep_output
         self.dataset_relative_time_indices: dict[str, list[int]] = {}
         self.dataset_time_maps: dict[str, dict[int, int]] = {}
         self._rollout_sampler_warning_keys: set[tuple[str, int, int]] = set()
@@ -94,12 +105,127 @@ class Forecaster(BaseTask):
                 kwargs,
             )
 
-        # Input: e.g. multistep_input=2, timestep=6H     ->  [-6H, 0H]
-        input_offsets = [-1 * i * self.timestep for i in range(multistep_input)]
-        # Outputs: e.g. multistep_output=1, timestep=6H  -> [[6H], [12H], [18H], ...] up to rollout.maximum
-        output_offsets = [(i + 1) * self.timestep for i in range(multistep_output)]
+        if self._reference_input_relative_times is None:
+            # Input: e.g. multistep_input=2, timestep=6H     ->  [-6H, 0H]
+            input_offsets = [-1 * i * self.timestep for i in range(multistep_input)]
+        else:
+            input_offsets = [relative_time * self.timestep for relative_time in self._reference_input_relative_times]
+        if self._reference_output_relative_times_by_step is None:
+            # Outputs: e.g. multistep_output=1, timestep=6H  -> [[6H], [12H], [18H], ...] up to rollout.maximum
+            output_offsets = [(i + 1) * self.timestep for i in range(multistep_output)]
+        else:
+            output_offsets = [
+                relative_time * self.timestep for relative_time in self._reference_output_relative_times_by_step[0]
+            ]
         super().__init__(input_offsets=input_offsets, output_offsets=output_offsets)
         self._plot_adapter = ForecasterPlotAdapter(self)
+
+    def _derive_sparse_layout(  # noqa: C901
+        self,
+        *,
+        multistep_input: int,
+        multistep_output: int,
+    ) -> tuple[int, int]:
+        if self.dataset_time_offsets is None:
+            return multistep_input, multistep_output
+
+        derived_multistep_input = multistep_input
+        derived_multistep_output: int | None = None
+        rollout_window = max(self.rollout.maximum, self.validation_rollout)
+
+        for dataset_name, dataset_cfg in self.dataset_time_offsets.items():
+            input_times = sorted(int(value) for value in dataset_cfg["input_offsets"])
+            target_times = sorted(int(value) for value in dataset_cfg["target_offsets"])
+            self.dataset_input_relative_times_by_dataset[dataset_name] = input_times
+            self.dataset_target_relative_times_by_dataset[dataset_name] = target_times
+            self.num_input_timesteps_by_dataset[dataset_name] = len(input_times)
+
+            if len(target_times) == 0:
+                self.dataset_target_relative_times_by_step[dataset_name] = tuple(() for _ in range(rollout_window))
+                continue
+
+            if len(target_times) % rollout_window != 0:
+                msg = (
+                    f"Dataset '{dataset_name}' target offsets {target_times} do not divide evenly across "
+                    f"rollout window {rollout_window}."
+                )
+                raise ValueError(msg)
+
+            per_step_output = len(target_times) // rollout_window
+            if derived_multistep_output is None:
+                derived_multistep_output = per_step_output
+            elif per_step_output != derived_multistep_output:
+                msg = (
+                    f"Dataset '{dataset_name}' target offsets imply multistep_output={per_step_output}, "
+                    f"but previous datasets implied {derived_multistep_output}."
+                )
+                raise ValueError(msg)
+
+            self.dataset_target_relative_times_by_step[dataset_name] = tuple(
+                tuple(target_times[i * per_step_output : (i + 1) * per_step_output]) for i in range(rollout_window)
+            )
+
+        if len(self.dataset_input_relative_times_by_dataset) > 0:
+            reference_input_dataset = max(
+                self.dataset_input_relative_times_by_dataset,
+                key=lambda name: len(self.dataset_input_relative_times_by_dataset[name]),
+            )
+            self._reference_input_relative_times = list(
+                self.dataset_input_relative_times_by_dataset[reference_input_dataset],
+            )
+            derived_multistep_input = len(self._reference_input_relative_times)
+
+        reference_target_dataset = next(
+            (
+                name
+                for name, target_times in self.dataset_target_relative_times_by_dataset.items()
+                if len(target_times) > 0
+            ),
+            None,
+        )
+        if reference_target_dataset is not None:
+            self._reference_output_relative_times_by_step = self.dataset_target_relative_times_by_step[
+                reference_target_dataset
+            ]
+        if derived_multistep_output is None:
+            derived_multistep_output = multistep_output
+
+        if derived_multistep_input != multistep_input:
+            LOGGER.info(
+                "Forecaster multistep_input overridden from %s to %s based on dataset_time_offsets.",
+                multistep_input,
+                derived_multistep_input,
+            )
+        if derived_multistep_output != multistep_output:
+            LOGGER.info(
+                "Forecaster multistep_output overridden from %s to %s based on dataset_time_offsets.",
+                multistep_output,
+                derived_multistep_output,
+            )
+
+        return derived_multistep_input, derived_multistep_output
+
+    def _requested_input_relative_times(self, dataset_name: str) -> list[int]:
+        requested = self.dataset_input_relative_times_by_dataset.get(dataset_name)
+        if requested is not None and len(requested) > 0:
+            return requested
+        if self._reference_input_relative_times is not None:
+            return self._reference_input_relative_times
+        return self.get_batch_input_indices()
+
+    def _requested_output_relative_times(self, dataset_name: str, rollout_step: int = 0) -> list[int]:
+        requested_by_step = self.dataset_target_relative_times_by_step.get(dataset_name)
+        if (
+            requested_by_step is not None
+            and rollout_step < len(requested_by_step)
+            and len(requested_by_step[rollout_step]) > 0
+        ):
+            return list(requested_by_step[rollout_step])
+        if self._reference_output_relative_times_by_step is not None and rollout_step < len(
+            self._reference_output_relative_times_by_step,
+        ):
+            return list(self._reference_output_relative_times_by_step[rollout_step])
+        return self.get_batch_output_indices(rollout_step=rollout_step)
 
     def steps(self, mode: str = "training") -> tuple[dict[str, int], ...]:
         """Return the current steps configuration based on the rollout step."""
@@ -117,6 +243,13 @@ class Forecaster(BaseTask):
 
     def _compute_rollout_offsets(self, rollout_step: int) -> list[datetime.timedelta]:
         """Compute the full list of offsets needed for the current rollout configuration."""
+        if self._reference_input_relative_times is not None:
+            relative_times = set(self._reference_input_relative_times)
+            if self._reference_output_relative_times_by_step is not None:
+                for step in range(min(rollout_step, len(self._reference_output_relative_times_by_step))):
+                    relative_times.update(self._reference_output_relative_times_by_step[step])
+            return sorted(relative_time * self.timestep for relative_time in relative_times)
+
         all_offsets = set(self._input_offsets)
         for step in range(rollout_step):
             shift = self._step_shift * step
@@ -141,6 +274,15 @@ class Forecaster(BaseTask):
 
     def get_output_offsets(self, rollout_step: int = 0, mode: str = "training", **_kwargs) -> list[datetime.timedelta]:
         """Return output offsets shifted by ``rollout_step``."""
+        if self._reference_output_relative_times_by_step is not None:
+            if rollout_step >= len(self._reference_output_relative_times_by_step):
+                msg = f"Requested rollout_step={rollout_step} beyond configured sparse output windows."
+                raise ValueError(msg)
+            return [
+                relative_time * self.timestep
+                for relative_time in self._reference_output_relative_times_by_step[rollout_step]
+            ]
+
         rollout_step = rollout_step if mode == "training" else self.validation_rollout
         shift = self._step_shift * rollout_step
         return sorted(o + shift for o in self._output_offsets)
@@ -153,8 +295,30 @@ class Forecaster(BaseTask):
         if len(dataset_names) == 0:
             return
 
+        if self._reference_input_relative_times is not None:
+            output_relative_times = self._requested_output_relative_times(dataset_names[0], rollout_step=0)
+            timesteps = {
+                "relative_date_indices_training": sorted(self._reference_input_relative_times + output_relative_times),
+                "input_relative_date_indices": list(self._reference_input_relative_times),
+                "output_relative_date_indices": output_relative_times,
+                "timestep": self._get_timestep_for_metadata(),
+            }
+            for dataset_name in dataset_names:
+                existing_timesteps = metadata_inference[dataset_name].get("timesteps", {})
+                metadata_inference[dataset_name]["timesteps"] = timesteps | existing_timesteps
+
         relative_by_dataset = self._resolve_relative_time_metadata(metadata_inference, dataset_names)
-        fallback_relative_indices = list(range(max(self.get_batch_output_indices(rollout_step=self.num_steps - 1)) + 1))
+        reference_input_relative_times = (
+            self._reference_input_relative_times
+            if self._reference_input_relative_times is not None
+            else self._requested_input_relative_times(dataset_names[0])
+        )
+        fallback_relative_indices = sorted(
+            {
+                *reference_input_relative_times,
+                *self._requested_output_relative_times(dataset_names[0], rollout_step=max(self.num_steps - 1, 0)),
+            },
+        )
         self.dataset_relative_time_indices = {
             dataset_name: relative_by_dataset.get(dataset_name, fallback_relative_indices)
             for dataset_name in dataset_names
@@ -246,9 +410,9 @@ class Forecaster(BaseTask):
         if len(self.dataset_time_maps) == 0:
             return super().get_inputs(batch, data_indices)
 
-        requested_relative_times = self.get_batch_input_indices()
         x = {}
         for dataset_name, dataset_batch in batch.items():
+            requested_relative_times = self._requested_input_relative_times(dataset_name)
             input_positions = [
                 self._sample_batch_position(dataset_name=dataset_name, relative_time=relative_time)
                 for relative_time in requested_relative_times
@@ -262,9 +426,10 @@ class Forecaster(BaseTask):
         if len(self.dataset_time_maps) == 0:
             return super().get_targets(batch, **kwargs)
 
-        requested_relative_times = self.get_batch_output_indices(rollout_step=kwargs.get("rollout_step", 0))
+        rollout_step = kwargs.get("rollout_step", 0)
         y = {}
         for dataset_name, dataset_batch in batch.items():
+            requested_relative_times = self._requested_output_relative_times(dataset_name, rollout_step=rollout_step)
             target_positions = [
                 self._sample_batch_position(dataset_name=dataset_name, relative_time=relative_time)
                 for relative_time in requested_relative_times
@@ -349,10 +514,9 @@ class Forecaster(BaseTask):
         if x_step.shape[1] == 1 and ensemble_size != 1:
             x_step = x_step.expand(-1, ensemble_size, -1, -1).clone()
 
-        pred_start = self.num_input_timesteps + rollout_step * self.num_output_timesteps
-        pred_end = pred_start + self.num_output_timesteps - 1
-        if pred_start <= int(relative_time) <= pred_end and dataset_name in y_pred_full:
-            pred_position = int(relative_time - pred_start)
+        output_relative_times = self._requested_output_relative_times(dataset_name, rollout_step=rollout_step)
+        if int(relative_time) in output_relative_times and dataset_name in y_pred_full:
+            pred_position = output_relative_times.index(int(relative_time))
             x_step[..., data_indices[dataset_name].model.input.prognostic] = y_pred_full[dataset_name][
                 :,
                 pred_position,
@@ -407,12 +571,12 @@ class Forecaster(BaseTask):
                 )
             return x
 
-        next_input_relative_times = [
-            int(relative_time + (rollout_step + 1) * self.num_output_timesteps)
-            for relative_time in self.get_batch_input_indices()
-        ]
         next_x: dict[str, torch.Tensor] = {}
         for dataset_name in x:
+            next_input_relative_times = [
+                int(relative_time + (rollout_step + 1) * self.num_output_timesteps)
+                for relative_time in self._requested_input_relative_times(dataset_name)
+            ]
             next_steps = [
                 self._build_rollout_input_step(
                     dataset_name=dataset_name,

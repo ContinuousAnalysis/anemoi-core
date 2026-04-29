@@ -192,7 +192,7 @@ def test_datamodule_relative_date_indices_include_sparse_dataset_time_offsets() 
     )
     datamodule = AnemoiDatasetsDataModule(config=cfg, task=task)
 
-    assert datamodule.relative_date_indices() == [0, 1, 3]
+    assert datamodule.relative_date_indices() == [0, 3]
 
 
 def test_datamodule_timestep_falls_back_to_task_when_data_timestep_is_missing() -> None:

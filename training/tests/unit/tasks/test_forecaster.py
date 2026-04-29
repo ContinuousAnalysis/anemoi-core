@@ -44,6 +44,13 @@ def _data_indices_single() -> dict[str, IndexCollection]:
     return {"data": _make_minimal_index_collection(_NAME_TO_INDEX)}
 
 
+def _data_indices_multi() -> dict[str, IndexCollection]:
+    return {
+        "meps": _make_minimal_index_collection(_NAME_TO_INDEX),
+        "radar": _make_minimal_index_collection(_NAME_TO_INDEX),
+    }
+
+
 # ── Forecaster: offsets and steps ─────────────────────────────────────────────
 
 
@@ -176,6 +183,80 @@ def test_forecaster_get_inputs_and_targets_are_disjoint_in_time() -> None:
     input_indices = task.get_batch_input_indices()
     output_indices = task.get_batch_output_indices(rollout_step=0)
     assert set(input_indices).isdisjoint(set(output_indices))
+
+
+def test_forecaster_dataset_time_offsets_override_multistep_layout() -> None:
+    task = Forecaster(
+        multistep_input=1,
+        multistep_output=2,
+        timestep="5m",
+        rollout={"start": 3, "maximum": 3},
+        dataset_time_offsets={
+            "datasets": {
+                "meps": {"input_offsets": [0, "6h"], "target_offsets": []},
+                "radar": {"input_offsets": [0], "target_offsets": ["5m", "10m", "15m"]},
+            },
+        },
+    )
+
+    assert task.num_input_timesteps == 2
+    assert task.num_input_timesteps_by_dataset == {"meps": 2, "radar": 1}
+    assert task.num_output_timesteps == 1
+    assert task.get_offsets(mode="training") == [
+        datetime.timedelta(0),
+        datetime.timedelta(minutes=5),
+        datetime.timedelta(minutes=10),
+        datetime.timedelta(minutes=15),
+        datetime.timedelta(hours=6),
+    ]
+
+
+def test_forecaster_sparse_inputs_use_dataset_specific_requested_times() -> None:
+    task = Forecaster(
+        multistep_input=1,
+        multistep_output=1,
+        timestep="5m",
+        rollout={"start": 1, "maximum": 3},
+        dataset_time_offsets={
+            "datasets": {
+                "meps": {"input_offsets": [0, "6h"], "target_offsets": []},
+                "radar": {"input_offsets": [0], "target_offsets": ["5m", "10m", "15m"]},
+            },
+        },
+    )
+    metadata = {
+        "metadata_inference": {
+            "dataset_names": ["meps", "radar"],
+            "meps": {
+                "timesteps": {
+                    "relative_date_indices_training_by_dataset": {"meps": [0, 72]},
+                    "relative_date_indices_validation_by_dataset": {"meps": [0, 72]},
+                },
+            },
+            "radar": {
+                "timesteps": {
+                    "relative_date_indices_training_by_dataset": {"radar": [0, 1, 2, 3]},
+                    "relative_date_indices_validation_by_dataset": {"radar": [0, 1, 2, 3]},
+                },
+            },
+        },
+    }
+    task.fill_metadata(metadata)
+
+    batch = {
+        "meps": torch.tensor([[[[[1.0, 10.0]]], [[[2.0, 20.0]]]]], dtype=torch.float32),
+        "radar": torch.tensor(
+            [[[[[3.0, 30.0]]], [[[4.0, 40.0]]], [[[5.0, 50.0]]], [[[6.0, 60.0]]]]],
+            dtype=torch.float32,
+        ),
+    }
+
+    x = task.get_inputs(batch, _data_indices_multi())
+
+    assert x["meps"].shape == (1, 2, 1, 1, 2)
+    assert x["radar"].shape == (1, 1, 1, 1, 2)
+    torch.testing.assert_close(x["meps"][0, :, 0, 0, 0], torch.tensor([1.0, 2.0]))
+    torch.testing.assert_close(x["radar"][0, :, 0, 0, 0], torch.tensor([3.0]))
 
 
 # ── Forecaster: _advance_dataset_input ────────────────────────────────────────

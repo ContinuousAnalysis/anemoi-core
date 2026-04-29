@@ -61,6 +61,7 @@ class AnemoiModelInterface(torch.nn.Module):
         config: DotDict,
         n_step_input: int,
         n_step_output: int,
+        n_step_input_by_dataset: dict[str, int] | None = None,
         graph_data: HeteroData,
         statistics: dict,
         data_indices: dict,
@@ -73,6 +74,7 @@ class AnemoiModelInterface(torch.nn.Module):
         self.id = str(uuid.uuid4())
         self.n_step_input = n_step_input
         self.n_step_output = n_step_output
+        self.n_step_input_by_dataset = n_step_input_by_dataset or {}
         self.graph_data = graph_data
         self.statistics = statistics
         self.statistics_tendencies = statistics_tendencies
@@ -197,6 +199,7 @@ class AnemoiModelInterface(torch.nn.Module):
             graph_data=self.graph_data,
             n_step_input=self.n_step_input,
             n_step_output=self.n_step_output,
+            n_step_input_by_dataset=self.n_step_input_by_dataset,
             _recursive_=False,  # Disables recursive instantiation by Hydra
         )
 

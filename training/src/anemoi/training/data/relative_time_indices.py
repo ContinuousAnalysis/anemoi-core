@@ -153,6 +153,37 @@ def _get_dataset_time_offsets_config(config: BaseSchema) -> object | None:
     return _config_get(cfg, "datasets") or cfg
 
 
+def parse_dataset_time_offsets(
+    dataset_time_offsets_cfg: object | None,
+    *,
+    timestep: str | int | object,
+) -> dict[str, dict[str, list[int]]] | None:
+    """Parse optional per-dataset sparse offsets using an explicit timestep."""
+    if dataset_time_offsets_cfg is None:
+        return None
+
+    cfg = _config_get(dataset_time_offsets_cfg, "datasets") or dataset_time_offsets_cfg
+    timestep_seconds = frequency_to_seconds(timestep)
+    timestep_string = str(timestep) if isinstance(timestep, str) else frequency_to_string(timestep)
+    parsed: dict[str, dict[str, list[int]]] = {}
+    for dataset_name, dataset_cfg in cfg.items():
+        parsed[str(dataset_name)] = _parse_dataset_time_offsets(
+            str(dataset_name),
+            dataset_cfg,
+            timestep_seconds=timestep_seconds,
+            timestep=timestep_string,
+        )
+
+    normalized = normalize_dataset_time_offsets_config(parsed)
+    return {
+        dataset_name: {
+            "input_offsets": dataset_cfg["input_offsets"].tolist(),
+            "target_offsets": dataset_cfg["target_offsets"].tolist(),
+        }
+        for dataset_name, dataset_cfg in normalized.items()
+    } or None
+
+
 def _parse_time_index_value(
     raw_value: object,
     *,
@@ -244,29 +275,10 @@ def _parse_dataset_time_offsets(
 
 def parse_dataset_time_offsets_config(config: BaseSchema) -> dict[str, dict[str, list[int]]] | None:
     """Parse optional per-dataset sparse offsets from config."""
-    cfg = _get_dataset_time_offsets_config(config)
-    if cfg is None:
-        return None
-
-    config_timestep = resolve_config_timestep(config)
-    timestep_seconds = frequency_to_seconds(config_timestep)
-    parsed: dict[str, dict[str, list[int]]] = {}
-    for dataset_name, dataset_cfg in cfg.items():
-        parsed[str(dataset_name)] = _parse_dataset_time_offsets(
-            str(dataset_name),
-            dataset_cfg,
-            timestep_seconds=timestep_seconds,
-            timestep=config_timestep,
-        )
-
-    normalized = normalize_dataset_time_offsets_config(parsed)
-    return {
-        dataset_name: {
-            "input_offsets": dataset_cfg["input_offsets"].tolist(),
-            "target_offsets": dataset_cfg["target_offsets"].tolist(),
-        }
-        for dataset_name, dataset_cfg in normalized.items()
-    } or None
+    return parse_dataset_time_offsets(
+        _get_dataset_time_offsets_config(config),
+        timestep=resolve_config_timestep(config),
+    )
 
 
 def default_relative_date_indices(

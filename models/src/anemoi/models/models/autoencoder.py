@@ -43,7 +43,7 @@ class AnemoiModelAutoEncoder(AnemoiModelEncProcDec):
             )
             node_attributes_data = shard_tensor(node_attributes_data, 0, shard_shapes_nodes, model_comm_group)
 
-        x_input = x[:, : self.n_step_input, ...]
+        x_input = x[:, : self.n_step_input_by_dataset[dataset_name], ...]
         # normalize and add data positional info (lat/lon)
         x_data_latent = torch.cat(
             (

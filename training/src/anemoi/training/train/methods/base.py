@@ -189,6 +189,11 @@ class BaseTrainingModule(pl.LightningModule, ABC):
 
         self.n_step_input = self.task.num_input_timesteps
         self.n_step_output = self.task.num_output_timesteps
+        task_input_steps_by_dataset = getattr(self.task, "num_input_timesteps_by_dataset", {})
+        self.n_step_input_by_dataset = {
+            dataset_name: int(task_input_steps_by_dataset.get(dataset_name, self.n_step_input))
+            for dataset_name in self.dataset_names
+        }
 
         self.model = AnemoiModelInterface(
             statistics=statistics,
@@ -197,6 +202,7 @@ class BaseTrainingModule(pl.LightningModule, ABC):
             metadata=metadata,
             n_step_input=self.n_step_input,
             n_step_output=self.n_step_output,
+            n_step_input_by_dataset=self.n_step_input_by_dataset,
             supporting_arrays=combined_supporting_arrays,
             graph_data=graph_data,
             config=config,

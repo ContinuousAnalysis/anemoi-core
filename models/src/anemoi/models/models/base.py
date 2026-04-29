@@ -42,6 +42,7 @@ class BaseGraphModel(nn.Module):
         statistics: dict,
         n_step_input: int,
         n_step_output: int,
+        n_step_input_by_dataset: dict[str, int] | None = None,
         graph_data: HeteroData,
     ) -> None:
         """Initializes the graph neural network.
@@ -65,6 +66,10 @@ class BaseGraphModel(nn.Module):
         self.n_step_output = n_step_output
 
         self.dataset_names = list(data_indices.keys())
+        self.n_step_input_by_dataset = {
+            dataset_name: int((n_step_input_by_dataset or {}).get(dataset_name, n_step_input))
+            for dataset_name in self.dataset_names
+        }
 
         model_config = DotDict(model_config)
         self._graph_name_hidden = model_config.model.model.hidden_nodes_name
@@ -128,7 +133,10 @@ class BaseGraphModel(nn.Module):
             self.output_dim[dataset_name] = self._calculate_output_dim(dataset_name)
 
     def _calculate_input_dim(self, dataset_name: str) -> int:
-        return self.n_step_input * self.num_input_channels[dataset_name] + self.node_attributes.attr_ndims[dataset_name]
+        return (
+            self.n_step_input_by_dataset[dataset_name] * self.num_input_channels[dataset_name]
+            + self.node_attributes.attr_ndims[dataset_name]
+        )
 
     def _calculate_input_dim_latent(self) -> int:
         """Calculate the latent input dimension."""

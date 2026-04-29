@@ -46,6 +46,7 @@ class AnemoiDiffusionModelEncProcDec(BaseGraphModel):
         statistics: dict,
         n_step_input: int,
         n_step_output: int,
+        n_step_input_by_dataset: dict[str, int] | None = None,
         graph_data: HeteroData,
     ) -> None:
 
@@ -66,6 +67,7 @@ class AnemoiDiffusionModelEncProcDec(BaseGraphModel):
             graph_data=graph_data,
             n_step_input=n_step_input,
             n_step_output=n_step_output,
+            n_step_input_by_dataset=n_step_input_by_dataset,
         )
 
         self.noise_embedder = instantiate(diffusion_config.noise_embedder)
@@ -754,7 +756,7 @@ class AnemoiDiffusionModelEncProcDec(BaseGraphModel):
         for dataset in self.input_dim.keys():
             shapes = {
                 "variables": self.input_dim[dataset],
-                "input_timesteps": self.n_step_input,
+                "input_timesteps": self.n_step_input_by_dataset[dataset],
                 "ensemble": 1,
                 "grid": None,  # grid size is dynamic
             }
@@ -772,6 +774,7 @@ class AnemoiDiffusionTendModelEncProcDec(AnemoiDiffusionModelEncProcDec):
         statistics: dict,
         n_step_input: int,
         n_step_output: int,
+        n_step_input_by_dataset: dict[str, int] | None = None,
         graph_data: HeteroData,
     ) -> None:
         model_config_local = DotDict(model_config)
@@ -783,6 +786,7 @@ class AnemoiDiffusionTendModelEncProcDec(AnemoiDiffusionModelEncProcDec):
             statistics=statistics,
             n_step_input=n_step_input,
             n_step_output=n_step_output,
+            n_step_input_by_dataset=n_step_input_by_dataset,
             graph_data=graph_data,
         )
 
