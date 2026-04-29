@@ -8,6 +8,7 @@
 # nor does it submit to any jurisdiction.
 
 from typing import Any
+from pathlib import Path
 
 import numpy as np
 from omegaconf import DictConfig
@@ -15,7 +16,7 @@ from omegaconf import OmegaConf
 from pytest_mock import MockFixture
 
 from anemoi.training.data.datamodule import AnemoiDatasetsDataModule
-from anemoi.training.tasks import SparseForecaster
+from anemoi.training.tasks import Forecaster
 
 
 class FakeDatasetReader:
@@ -41,60 +42,14 @@ class FakeDatasetReader:
         raise NotImplementedError(msg)
 
 
-def build_sparse_forecaster_config() -> DictConfig:
-    return OmegaConf.create(
-        {
-            "data": {
-                "timestep": "5m",
-                "datasets": {
-                    "meps": {"forcing": ["forcing_var"], "diagnostic": [], "target": []},
-                    "nordic_radar": {"forcing": ["forcing_var"], "diagnostic": [], "target": []},
-                },
-            },
-            "task": {
-                "_target_": "anemoi.training.tasks.SparseForecaster",
-                "multistep_input": 1,
-                "multistep_output": 1,
-                "timestep": "5m",
-                "rollout": {"start": 1, "epoch_increment": 0, "maximum": 3},
-                "validation_rollout": 1,
-                "dataset_time_offsets": {
-                    "datasets": {
-                        "meps": {"input_offsets": [0], "target_offsets": []},
-                        "nordic_radar": {"input_offsets": [0], "target_offsets": ["5m", "10m", "15m"]},
-                    },
-                },
-            },
-            "dataloader": {
-                "pin_memory": False,
-                "prefetch_factor": 2,
-                "debug": {"time_index_mode": "auto_sparse"},
-                "num_workers": {"training": 0, "validation": 0, "test": 0},
-                "batch_size": {"training": 1, "validation": 1, "test": 1},
-                "training": {
-                    "datasets": {
-                        "meps": {
-                            "dataset_config": {"dataset": "meps_source", "frequency": "1h"},
-                            "start": "2020-01-01 00:00:00",
-                            "end": "2020-01-02 00:00:00",
-                        },
-                        "nordic_radar": {
-                            "dataset_config": {"dataset": "radar_source", "frequency": "5m"},
-                            "start": "2020-01-01 00:00:00",
-                            "end": "2020-01-02 00:00:00",
-                        },
-                    },
-                },
-                "validation": {"datasets": {}},
-                "test": {"datasets": {}},
-            },
-            "training": {},
-        },
-    )
+def load_sparse_multidatasets_config() -> DictConfig:
+    cfg = OmegaConf.load(Path.cwd() / "training/tests/integration/config/test_sparse_multidatasets.yaml")
+    assert isinstance(cfg, DictConfig)
+    return cfg
 
 
 def test_sparse_forecaster_metadata_keeps_per_dataset_sparse_windows(mocker: MockFixture) -> None:
-    cfg = build_sparse_forecaster_config()
+    cfg = load_sparse_multidatasets_config()
     fake_readers = {
         "meps_source": FakeDatasetReader(
             dataset_name="meps_source",
@@ -117,11 +72,12 @@ def test_sparse_forecaster_metadata_keeps_per_dataset_sparse_windows(mocker: Moc
         side_effect=lambda dataset_cfg, **_kwargs: fake_readers[dataset_cfg.dataset_config.dataset],
     )
 
-    task = SparseForecaster(
+    task = Forecaster(
         multistep_input=1,
         multistep_output=1,
         timestep="5m",
-        rollout={"start": 1, "epoch_increment": 0, "maximum": 3},
+        rollout={"start": 3, "epoch_increment": 0, "maximum": 3},
+        dataset_time_offsets=cfg.task.dataset_time_offsets,
     )
     datamodule = AnemoiDatasetsDataModule(config=cfg, task=task)
     metadata = {"metadata_inference": {}}

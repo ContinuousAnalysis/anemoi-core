@@ -27,6 +27,7 @@ from anemoi.training.data.relative_time_indices import parse_dataset_time_offset
 from anemoi.training.data.relative_time_indices import resolve_config_timestep
 from anemoi.training.data.relative_time_indices import resolve_relative_date_indices
 from anemoi.training.utils.worker_init import worker_init_func
+from anemoi.utils.dates import frequency_to_seconds
 from anemoi.utils.dates import frequency_to_string
 from anemoi.utils.dates import frequency_to_timedelta
 
@@ -154,6 +155,44 @@ class AnemoiDatasetsDataModule(pl.LightningDataModule):
         time_index_anchor_dataset = getattr(debug_cfg, "time_index_anchor_dataset", None)
         dataset_time_offsets = parse_dataset_time_offsets_config(self.config)
         data_readers = {name: create_dataset(data_reader, task=self.task) for name, data_reader in config.items()}
+        if str(time_index_mode).strip().lower() == "dense" and len(data_readers) > 1:
+            frequency_seconds = {name: frequency_to_seconds(reader.frequency) for name, reader in data_readers.items()}
+            finest_dataset_name = min(frequency_seconds, key=frequency_seconds.get)
+            finest_frequency = frequency_to_string(frequency_to_timedelta(data_readers[finest_dataset_name].frequency))
+            if len(set(frequency_seconds.values())) != 1:
+                dataset_frequencies = ", ".join(
+                    f"{name}={frequency_to_string(frequency_to_timedelta(reader.frequency))}"
+                    for name, reader in data_readers.items()
+                )
+                coarse_dataset_names = [
+                    name for name, seconds in frequency_seconds.items() if seconds != frequency_seconds[finest_dataset_name]
+                ]
+                LOGGER.warning(
+                    "Dense time-index mode requested for %s data with mixed dataset frequencies (%s). "
+                    "Reopening coarser datasets with `interpolate_frequency=%s`: %s",
+                    label,
+                    dataset_frequencies,
+                    finest_frequency,
+                    ", ".join(coarse_dataset_names),
+                )
+                for name in coarse_dataset_names:
+                    reader_config = dict(config[name])
+                    dataset_config = reader_config.get("dataset_config", reader_config.get("dataset"))
+                    if dataset_config is None:
+                        msg = f"Missing dataset configuration for '{name}'."
+                        raise ValueError(msg)
+                    if hasattr(dataset_config, "keys"):
+                        dataset_config = dict(dataset_config)
+                    else:
+                        dataset_config = {"dataset": dataset_config}
+                    dataset_config.pop("frequency", None)
+                    dataset_config["interpolate_frequency"] = finest_frequency
+                    reader_config.pop("frequency", None)
+                    if "dataset_config" in reader_config:
+                        reader_config["dataset_config"] = dataset_config
+                    else:
+                        reader_config["dataset"] = dataset_config
+                    data_readers[name] = create_dataset(reader_config, task=self.task)
         model_relative_date_indices = compute_model_relative_date_indices(self.task, mode=label)
         relative_date_indices: list | dict[str, list[int]]
         if model_relative_date_indices is not None:

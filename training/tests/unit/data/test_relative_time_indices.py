@@ -8,8 +8,11 @@
 # nor does it submit to any jurisdiction.
 
 import numpy as np
+import pytest
+from omegaconf import OmegaConf
 
 from anemoi.training.data.data_reader import NativeGridDataset
+from anemoi.training.data.relative_time_indices import parse_dataset_time_offsets_config
 
 
 def test_get_sample_normalizes_time_indices_before_dataset_access() -> None:
@@ -36,3 +39,25 @@ def test_get_sample_normalizes_time_indices_before_dataset_access() -> None:
     time_index = dataset.data.last_index[0]
     assert isinstance(time_index, slice)
     assert (time_index.start, time_index.stop, time_index.step) == (4, 7, 1)
+
+
+def test_parse_dataset_time_offsets_config_rejects_legacy_input_target_aliases() -> None:
+    cfg = OmegaConf.create(
+        {
+            "data": {"timestep": "5m"},
+            "task": {
+                "dataset_time_offsets": {
+                    "datasets": {
+                        "radar": {
+                            "input": [0],
+                            "target": ["5m"],
+                        },
+                    },
+                },
+            },
+            "training": {},
+        },
+    )
+
+    with pytest.raises(ValueError, match="input_offsets"):
+        parse_dataset_time_offsets_config(cfg)

@@ -6,17 +6,20 @@
 # granted to it by virtue of its status as an intergovernmental organisation
 # nor does it submit to any jurisdiction.
 
-from anemoi.training.schemas.tasks import SparseForecasterSchema
+import pytest
+from pydantic import ValidationError
+
+from anemoi.training.schemas.tasks import ForecasterSchema
 
 
-def _sparse_forecaster_config(
+def _forecaster_config(
     *,
     dataset_time_key: str,
     input_key: str,
     target_key: str,
 ) -> dict:
     return {
-        "_target_": "anemoi.training.tasks.SparseForecaster",
+        "_target_": "anemoi.training.tasks.Forecaster",
         "multistep_input": 1,
         "multistep_output": 1,
         "timestep": "5m",
@@ -33,9 +36,9 @@ def _sparse_forecaster_config(
     }
 
 
-def test_sparse_forecaster_schema_accepts_dataset_time_offsets() -> None:
-    schema = SparseForecasterSchema(
-        **_sparse_forecaster_config(
+def test_forecaster_schema_accepts_dataset_time_offsets() -> None:
+    schema = ForecasterSchema(
+        **_forecaster_config(
             dataset_time_key="dataset_time_offsets",
             input_key="input_offsets",
             target_key="target_offsets",
@@ -47,15 +50,12 @@ def test_sparse_forecaster_schema_accepts_dataset_time_offsets() -> None:
     assert dump["dataset_time_offsets"]["datasets"]["radar"]["target_offsets"] == ["5m", "10m"]
 
 
-def test_sparse_forecaster_schema_accepts_legacy_dataset_time_indices_aliases() -> None:
-    schema = SparseForecasterSchema(
-        **_sparse_forecaster_config(
-            dataset_time_key="dataset_time_indices",
-            input_key="input",
-            target_key="target",
-        ),
-    )
-
-    dump = schema.model_dump()
-    assert dump["dataset_time_offsets"]["datasets"]["radar"]["input_offsets"] == [0]
-    assert dump["dataset_time_offsets"]["datasets"]["radar"]["target_offsets"] == ["5m", "10m"]
+def test_forecaster_schema_rejects_legacy_sparse_aliases() -> None:
+    with pytest.raises(ValidationError):
+        ForecasterSchema(
+            **_forecaster_config(
+                dataset_time_key="dataset_time_indices",
+                input_key="input",
+                target_key="target",
+            ),
+        )

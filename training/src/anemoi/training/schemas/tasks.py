@@ -6,11 +6,12 @@
 # granted to it by virtue of its status as an intergovernmental organisation
 # nor does it submit to any jurisdiction.
 
+from __future__ import annotations
+
 
 from typing import Annotated
 from typing import Literal
 
-from pydantic import AliasChoices
 from pydantic import Discriminator
 from pydantic import Field
 from pydantic import NonNegativeInt
@@ -45,21 +46,20 @@ class ForecasterSchema(BaseModel):
     "Rollout configuration for autoregressive training."
     validation_rollout: NonNegativeInt = Field(example=[0, 6, 12])
     "Number of rollouts to use for validation."
+    rollout_forcing_policy: Literal["last_available", "exact"] = Field(default="last_available")
+    "How sparse rollout fills missing coarse timesteps during autoregressive updates."
+    dataset_time_offsets: SparseDatasetTimeOffsetsConfigSchema | dict[str, SparseDatasetTimeOffsetsSchema] | None = (
+        Field(default=None)
+    )
+    "Optional per-dataset sparse input and target offsets for mixed-frequency loading."
 
 
 class SparseDatasetTimeOffsetsSchema(BaseModel):
     """Per-dataset sparse offsets for mixed-frequency loading."""
 
-    input_offsets: list[int | str] = Field(
-        validation_alias=AliasChoices("input_offsets", "input"),
-        examples=[[0]],
-    )
+    input_offsets: list[int | str] = Field(examples=[[0]])
     "Offsets to load as model inputs for this dataset."
-    target_offsets: list[int | str] = Field(
-        default_factory=list,
-        validation_alias=AliasChoices("target_offsets", "target"),
-        examples=[["5m", "10m"]],
-    )
+    target_offsets: list[int | str] = Field(default_factory=list, examples=[["5m", "10m"]])
     "Offsets to load as model targets for this dataset."
 
 
@@ -68,32 +68,6 @@ class SparseDatasetTimeOffsetsConfigSchema(BaseModel):
 
     datasets: dict[str, SparseDatasetTimeOffsetsSchema]
     "Per-dataset sparse offsets."
-
-
-class SparseForecasterSchema(BaseModel):
-    """Configuration for sparse forecasting tasks."""
-
-    target_: Literal["anemoi.training.tasks.SparseForecaster"] = Field(..., alias="_target_")
-    "Task class path for the sparse forecasting task."
-    multistep_input: PositiveInt = Field(example=2)
-    "Number of input timesteps provided to the model."
-    multistep_output: PositiveInt = Field(example=1)
-    "Number of output timesteps the model should predict."
-    timestep: str = Field(example="5m")
-    "Timestep string (e.g. '5m') defining the sparse model-relative window."
-    rollout: RolloutSchema = Field(...)
-    "Rollout configuration for autoregressive training."
-    validation_rollout: NonNegativeInt = Field(example=1)
-    "Number of rollouts to use for validation."
-    rollout_forcing_policy: Literal["last_available", "exact"] = Field(default="last_available")
-    "How sparse rollout fills missing coarse timesteps during autoregressive updates."
-    dataset_time_offsets: SparseDatasetTimeOffsetsConfigSchema | dict[str, SparseDatasetTimeOffsetsSchema] | None = (
-        Field(
-            default=None,
-            validation_alias=AliasChoices("dataset_time_offsets", "dataset_time_indices"),
-        )
-    )
-    "Optional per-dataset sparse input and target offsets for mixed-frequency loading."
 
 
 class AutoencoderTaskSchema(BaseModel):
@@ -119,6 +93,6 @@ class TemporalDownscalerSchema(BaseModel):
 
 
 TaskSchema = Annotated[
-    ForecasterSchema | SparseForecasterSchema | AutoencoderTaskSchema | TemporalDownscalerSchema,
+    ForecasterSchema | AutoencoderTaskSchema | TemporalDownscalerSchema,
     Discriminator("target_"),
 ]

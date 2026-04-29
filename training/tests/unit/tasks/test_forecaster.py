@@ -258,3 +258,134 @@ def test_rollout_advance_input_reapplies_boundary_truth_and_refreshes_forcing() 
     torch.testing.assert_close(updated[0, -1, 0, :, 0], torch.tensor([10.0, 200.0]))
     # forcing variable should be refreshed from batch for both grid points
     torch.testing.assert_close(updated[0, -1, 0, :, 1], torch.tensor([1000.0, 2000.0]))
+
+
+def test_forecaster_preserves_datamodule_sparse_timing_metadata() -> None:
+    task = Forecaster(
+        multistep_input=1,
+        multistep_output=1,
+        timestep="5m",
+        rollout={"start": 1, "maximum": 2},
+    )
+    metadata = {
+        "metadata_inference": {
+            "dataset_names": ["data"],
+            "data": {
+                "timesteps": {
+                    "relative_date_indices_training_by_dataset": {"data": [0, 2]},
+                    "relative_date_indices_validation_by_dataset": {"data": [0, 2]},
+                },
+            },
+        },
+    }
+
+    task.fill_metadata(metadata)
+
+    timesteps = metadata["metadata_inference"]["data"]["timesteps"]
+    assert timesteps["relative_date_indices_training_by_dataset"]["data"] == [0, 2]
+    assert task.dataset_time_maps["data"] == {0: 0, 2: 1}
+
+
+def test_forecaster_advance_input_reuses_latest_available_sparse_timestep() -> None:
+    task = Forecaster(
+        multistep_input=1,
+        multistep_output=1,
+        timestep="5m",
+        rollout={"start": 1, "maximum": 2},
+    )
+    metadata = {
+        "metadata_inference": {
+            "dataset_names": ["data"],
+            "data": {
+                "timesteps": {
+                    "relative_date_indices_training_by_dataset": {"data": [0, 2]},
+                    "relative_date_indices_validation_by_dataset": {"data": [0, 2]},
+                },
+            },
+        },
+    }
+    task.fill_metadata(metadata)
+    data_indices = {
+        "data": _make_minimal_index_collection({"prog": 0, "force": 1}, forcing=["force"]),
+    }
+
+    batch = {
+        "data": torch.tensor(
+            [
+                [
+                    [[[1.0, 10.0]]],
+                    [[[3.0, 30.0]]],
+                ],
+            ],
+            dtype=torch.float32,
+        ),
+    }
+    x = task.get_inputs(batch, data_indices)
+    y = task.get_targets(batch, rollout_step=1)
+    y_pred = {"data": torch.tensor([[[[[100.0]]]]], dtype=torch.float32)}
+
+    updated = task.advance_input(
+        x,
+        y_pred,
+        batch,
+        rollout_step=0,
+        data_indices=data_indices,
+        output_mask={"data": NoOutputMask()},
+        grid_shard_slice={"data": None},
+    )
+
+    torch.testing.assert_close(y["data"][0, 0, 0, 0, 0], torch.tensor(3.0))
+    torch.testing.assert_close(updated["data"][0, 0, 0, 0, 0], torch.tensor(100.0))
+    torch.testing.assert_close(updated["data"][0, 0, 0, 0, 1], torch.tensor(10.0))
+
+
+def test_forecaster_sparse_advance_input_preserves_ensemble_dimension() -> None:
+    task = Forecaster(
+        multistep_input=1,
+        multistep_output=1,
+        timestep="5m",
+        rollout={"start": 1, "maximum": 2},
+    )
+    metadata = {
+        "metadata_inference": {
+            "dataset_names": ["data"],
+            "data": {
+                "timesteps": {
+                    "relative_date_indices_training_by_dataset": {"data": [0, 2]},
+                    "relative_date_indices_validation_by_dataset": {"data": [0, 2]},
+                },
+            },
+        },
+    }
+    task.fill_metadata(metadata)
+    data_indices = {
+        "data": _make_minimal_index_collection({"prog": 0, "force": 1}, forcing=["force"]),
+    }
+
+    batch = {
+        "data": torch.tensor(
+            [
+                [
+                    [[[1.0, 10.0]]],
+                    [[[3.0, 30.0]]],
+                ],
+            ],
+            dtype=torch.float32,
+        ),
+    }
+    x = task.get_inputs(batch, data_indices)
+    y_pred = {"data": torch.tensor([[[[[100.0]], [[200.0]]]]], dtype=torch.float32)}
+
+    updated = task.advance_input(
+        x,
+        y_pred,
+        batch,
+        rollout_step=0,
+        data_indices=data_indices,
+        output_mask={"data": NoOutputMask()},
+        grid_shard_slice={"data": None},
+    )
+
+    assert updated["data"].shape == (1, 1, 2, 1, 2)
+    torch.testing.assert_close(updated["data"][0, 0, :, 0, 0], torch.tensor([100.0, 200.0]))
+    torch.testing.assert_close(updated["data"][0, 0, :, 0, 1], torch.tensor([10.0, 10.0]))

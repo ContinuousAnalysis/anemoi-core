@@ -81,11 +81,7 @@ def normalize_dataset_time_offsets_config(
     normalized: dict[str, dict[str, np.ndarray]] = {}
     for dataset_name, dataset_cfg in (dataset_time_offsets_by_dataset or {}).items():
         raw_input_offsets = _config_get(dataset_cfg, "input_offsets")
-        if raw_input_offsets is None:
-            raw_input_offsets = _config_get(dataset_cfg, "input")
         raw_target_offsets = _config_get(dataset_cfg, "target_offsets")
-        if raw_target_offsets is None:
-            raw_target_offsets = _config_get(dataset_cfg, "target")
         if raw_input_offsets is None or raw_target_offsets is None:
             msg = f"Dataset '{dataset_name}' sparse offsets must define both `input_offsets` and `target_offsets`."
             raise ValueError(msg)
@@ -149,17 +145,9 @@ def resolve_config_timestep(config: BaseSchema) -> str:
 
 
 def _get_dataset_time_offsets_config(config: BaseSchema) -> object | None:
-    """Get sparse per-dataset offsets from the task or legacy training section."""
+    """Get sparse per-dataset offsets from the task config."""
     task_cfg = _config_get(config, "task")
     cfg = _config_get(task_cfg, "dataset_time_offsets")
-    if cfg is None:
-        cfg = _config_get(task_cfg, "dataset_time_indices")
-    if cfg is None:
-        training_cfg = _config_get(config, "training")
-        cfg = _config_get(training_cfg, "dataset_time_offsets")
-    if cfg is None:
-        training_cfg = _config_get(config, "training")
-        cfg = _config_get(training_cfg, "dataset_time_indices")
     if cfg is None:
         return None
     return _config_get(cfg, "datasets") or cfg
@@ -227,11 +215,7 @@ def _parse_dataset_time_offsets(
 ) -> dict[str, list[int]]:
     """Parse sparse input and target offsets for one dataset."""
     raw_input_offsets = _config_get(dataset_cfg, "input_offsets")
-    if raw_input_offsets is None:
-        raw_input_offsets = _config_get(dataset_cfg, "input")
     raw_target_offsets = _config_get(dataset_cfg, "target_offsets")
-    if raw_target_offsets is None:
-        raw_target_offsets = _config_get(dataset_cfg, "target")
     if raw_input_offsets is None or raw_target_offsets is None:
         msg = f"`dataset_time_offsets[{dataset_name}]` must define both `input_offsets` and `target_offsets`."
         raise ValueError(msg)
