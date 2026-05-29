@@ -388,7 +388,7 @@ The training configuration for diffusion models requires changes:
    multistep_input: 2
    rollout:
      start: 1
-     max: 1
+     maximum: 1
 
 The training method must be set to the appropriate diffusion training class
 to handle the diffusion-specific forward pass with preconditioning and
@@ -425,7 +425,7 @@ Uses `graphtransformer_diffusion.yaml` or `transformer_diffusion.yaml`:
 -  Applies noise to the target state during training
 -  Model class: :class:`AnemoiDiffusionModelEncProcDec`
 -  Training method: :class:`DiffusionTraining`
--  Use single-step rollout (`rollout.max: 1`)
+-  Use single-step rollout (`rollout.maximum: 1`)
 
 **Tendency-based Diffusion**
 ----------------------------
@@ -438,7 +438,7 @@ Uses `graphtransformer_diffusiontend.yaml` or
 -  Model class: :class:`AnemoiDiffusionTendModelEncProcDec`
 -  Training method: :class:`DiffusionTendencyTraining`
 -  Requires `statistics_tendencies` for normalization
--  Use single-step rollout (`rollout.max: 1`)
+-  Use single-step rollout (`rollout.maximum: 1`)
 
 Choose the variant based on your specific use case.
 
