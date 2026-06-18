@@ -59,6 +59,19 @@ def restore_base_seed(original_seed: str | None) -> None:
         os.environ["ANEMOI_BASE_SEED"] = original_seed
 
 
+@pytest.fixture(autouse=True)
+def _reset_dynamo() -> None:
+    """Reset torch compile state before and after each test.
+
+    This prevents 'recomputed metadata doesn't match checkpointed value' errors observed with torch 2.12.
+    """
+    import torch._dynamo
+
+    torch._dynamo.reset()
+    yield
+    torch._dynamo.reset()
+
+
 @pytest.mark.multigpu
 @pytest.mark.slow
 def test_benchmark_dataloader(
