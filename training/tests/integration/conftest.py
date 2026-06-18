@@ -473,14 +473,14 @@ def gnn_config(testing_modifications_with_temp_dir: DictConfig, get_tmp_path: Ge
         "graphtransformer",
         "stretched",
         "ensemble_crps",
-        "edm_diffusion_tendency",
+        # "edm_diffusion_tendency", # DEACTIVATE FOR NOW DUE TO CI UNREPRODUCIBILITY ISSUE WITH SAVING MEMORY FOOTPRINT,
     ],
     ids=[
         "lam",
         "graphtransformer",
         "stretched",
         "ensemble_crps",
-        "edm_diffusion_tendency",
+        # "edm_diffusion_tendency", # DEACTIVATE FOR NOW DUE TO CI UNREPRODUCIBILITY ISSUE WITH SAVING MEMORY FOOTPRINT,
     ],
 )
 def benchmark_config(
