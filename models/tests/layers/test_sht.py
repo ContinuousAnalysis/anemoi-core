@@ -99,7 +99,7 @@ def test_reduced_grouped_rfft_matches_ring_loop() -> None:
     torch.testing.assert_close(direct.rfft_rings_reduced_grouped(x), direct.rfft_rings_reduced_naive(x))
 
 
-@pytest.fixture(params=["regular", "reduced", "octahedral"])
+@pytest.fixture
 def sht_setup(request):
     # Choose GPUs if available
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -133,6 +133,7 @@ def sht_setup(request):
     }
 
 
+@pytest.mark.parametrize("sht_setup", ["regular", "reduced", "octahedral"], indirect=True)
 def test_idempotency_direct_inverse(sht_setup):
     """direct followed by inverse returns the original (band-limited) field."""
     truncation = sht_setup["truncation"]
@@ -150,6 +151,7 @@ def test_idempotency_direct_inverse(sht_setup):
     assert torch.allclose(before, after, rtol=tolerance)
 
 
+@pytest.mark.parametrize("sht_setup", ["regular", "reduced", "octahedral"], indirect=True)
 def test_idempotency_inverse_direct(sht_setup):
     """inverse followed by direct returns the original spectral coefficients."""
     truncation = sht_setup["truncation"]
@@ -171,6 +173,7 @@ def test_idempotency_inverse_direct(sht_setup):
     assert maxdiff < tolerance
 
 
+@pytest.mark.parametrize("sht_setup", ["regular", "reduced", "octahedral"], indirect=True)
 def test_direct_linearity(sht_setup):
     dtype = sht_setup["dtype"]
     tolerance = sht_setup["tolerance"]
