@@ -14,8 +14,10 @@ import logging
 import torch
 from torch.utils.checkpoint import checkpoint
 
+from anemoi.models.data import Batch
 from anemoi.models.preprocessing import StepwiseProcessors
 from anemoi.models.transport import reference_state_sampling_source
+from anemoi.models.transport.data_helpers import is_sparse_data
 from anemoi.training.diagnostics.callbacks.plot_adapter import EnsemblePlotAdapterWrapper
 from anemoi.training.train.methods.base import BaseTrainingModule
 from anemoi.training.train.methods.edm_diffusion import EDMDiffusionTransportObjective
@@ -36,44 +38,47 @@ class PredictionMode:
 
     def prepare_target(
         self,
-        batch: dict[str, torch.Tensor],
-        x: dict[str, torch.Tensor],
+        batch: Batch,
+        x: Batch,
     ) -> PreparedPredictionTarget:
         raise NotImplementedError
 
     def reconstruct_prediction(
         self,
-        prediction: dict[str, torch.Tensor],
+        prediction: Batch,
         prepared: PreparedPredictionTarget,
-    ) -> dict[str, torch.Tensor]:
+    ) -> Batch:
         raise NotImplementedError
 
-    def prepare_metric_target(self, prepared: PreparedPredictionTarget) -> dict[str, torch.Tensor]:
+    def prepare_metric_target(self, prepared: PreparedPredictionTarget) -> Batch:
         return prepared.metric_target
 
 
 class StatePredictionMode(PredictionMode):
     """Prediction mode where the model learns the future state directly."""
 
-    def _reference_state_target_space(self, batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    def _reference_state_target_space(self, batch: Batch) -> Batch:
         # Use the latest input state as a source field, selecting the same
         # variables that the model predicts for the future state.
-        reference: dict[str, torch.Tensor] = {}
+        reference_data: dict[str, torch.Tensor] = {}
         for dataset_name, batch_dataset in batch.items():
-            var_idx = self.module.data_indices[dataset_name].data.output.full.to(device=batch_dataset.device)
-            reference_step = batch_dataset.narrow(1, self.module.n_step_input - 1, 1).index_select(-1, var_idx)
+            var_idx = self.module.data_indices[dataset_name].data.output.full.tolist()
+            reference_step = batch_dataset.select(time=self.module.n_step_input - 1, variables=var_idx).data
             if self.module.n_step_output > 1:
+                if isinstance(reference_step, list):
+                    msg = "Multi-step reference-state transport sources are not supported for sparse datasets."
+                    raise NotImplementedError(msg)
                 reference_step = reference_step.expand(-1, self.module.n_step_output, -1, -1, -1)
-            reference[dataset_name] = reference_step
-        return self.module.reduce_data_output_target_to_model_output(reference)
+            reference_data[dataset_name] = reference_step
+        return self.module.reduce_data_output_target_to_model_output(batch.with_data(reference_data))
 
     def prepare_target(
         self,
-        batch: dict[str, torch.Tensor],
-        x: dict[str, torch.Tensor],
+        batch: Batch,
+        x: Batch,
     ) -> PreparedPredictionTarget:
         del x
-        target_full = self.module.task.get_targets(batch, data_indices=self.module.data_indices)
+        target_full, _ = self.module.task.get_targets(batch)
         target_data_output = self.module.get_data_output_target(target_full)
         model_target = self.module.reduce_data_output_target_to_model_output(target_data_output)
         return PreparedPredictionTarget(
@@ -90,9 +95,9 @@ class StatePredictionMode(PredictionMode):
 
     def reconstruct_prediction(
         self,
-        prediction: dict[str, torch.Tensor],
+        prediction: Batch,
         prepared: PreparedPredictionTarget,
-    ) -> dict[str, torch.Tensor]:
+    ) -> Batch:
         del prepared
         return prediction
 
@@ -233,11 +238,15 @@ class TendencyPredictionMode(PredictionMode):
 
     def prepare_target(
         self,
-        batch: dict[str, torch.Tensor],
-        x: dict[str, torch.Tensor],
+        batch: Batch,
+        x: Batch,
     ) -> PreparedPredictionTarget:
         """Build tendency targets for training and state targets for validation metrics."""
-        state_target = self.module.task.get_targets(batch)
+        if any(is_sparse_data(dataset_data) for dataset_data in batch.data.values()):
+            msg = "Tendency prediction mode is not implemented for sparse observation datasets."
+            raise NotImplementedError(msg)
+
+        state_target, _ = self.module.task.get_targets(batch)
         y_data_output = self.module.get_data_output_target(state_target)
 
         pre_processors_tendencies = getattr(self.module.model, "pre_processors_tendencies", None)
@@ -255,7 +264,7 @@ class TendencyPredictionMode(PredictionMode):
         )
         x_ref = {dataset_name: (ref[:, -1] if ref.ndim == 5 else ref) for dataset_name, ref in x_ref.items()}
 
-        tendency_target_data_output = self._compute_tendency_target(y_data_output, x_ref)
+        tendency_target_data_output = y_data_output.with_data(self._compute_tendency_target(y_data_output.data, x_ref))
         tendency_target = self.module.reduce_data_output_target_to_model_output(tendency_target_data_output)
         return PreparedPredictionTarget(
             model_target=tendency_target,
@@ -269,7 +278,7 @@ class TendencyPredictionMode(PredictionMode):
                 # Build a reference-state source only if source.kind asks for it;
                 # Gaussian and zero sources do not need this projection.
                 "transport_reference_source": lambda: reference_state_sampling_source(
-                    x,
+                    x.data,
                     data_indices=self.module.data_indices,
                     n_step_output=self.module.n_step_output,
                 ),
@@ -278,20 +287,22 @@ class TendencyPredictionMode(PredictionMode):
 
     def reconstruct_prediction(
         self,
-        prediction: dict[str, torch.Tensor],
+        prediction: Batch,
         prepared: PreparedPredictionTarget,
-    ) -> dict[str, torch.Tensor]:
-        return self._reconstruct_state(prepared.aux["x_ref"], prediction)
+    ) -> Batch:
+        reconstructed = self._reconstruct_state(prepared.aux["x_ref"], prediction.data)
+        return prepared.metric_target.with_data(reconstructed)
 
-    def prepare_metric_target(self, prepared: PreparedPredictionTarget) -> dict[str, torch.Tensor]:
-        return {
+    def prepare_metric_target(self, prepared: PreparedPredictionTarget) -> Batch:
+        metric_data = {
             dataset_name: self.module.model.model._apply_imputer_inverse(
                 self.module.model.post_processors,
                 dataset_name,
-                target,
+                target.data,
             )
             for dataset_name, target in prepared.metric_target.items()
         }
+        return prepared.metric_target.with_data(metric_data)
 
 
 PREDICTION_MODE_CLASSES = {
@@ -333,59 +344,58 @@ class BaseTransportTraining(BaseTrainingModule):
             self._ensemble_plot_adapter = EnsemblePlotAdapterWrapper(self.task._plot_adapter)
         return self._ensemble_plot_adapter
 
-    def get_data_output_target(self, target_full: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    def get_data_output_target(self, target_full: Batch) -> Batch:
         """Select the target variables that are present in the dataset output."""
         y = {}
         for dataset_name, target_dataset in target_full.items():
-            var_idx = self.data_indices[dataset_name].data.output.full.to(device=target_dataset.device)
-            y[dataset_name] = target_dataset.index_select(-1, var_idx)
+            var_idx = self.data_indices[dataset_name].data.output.full.tolist()
+            y[dataset_name] = target_dataset.select(variables=var_idx).data
             LOGGER.debug(
                 "SHAPE: y_data_output[%s].shape = %s",
                 dataset_name,
-                list(y[dataset_name].shape),
+                y[dataset_name].shape if hasattr(y[dataset_name], "shape") else [t.shape for t in y[dataset_name]],
             )
-        return y
+        return target_full.with_data(y)
 
     def reduce_data_output_target_to_model_output(
         self,
-        y_data_output: dict[str, torch.Tensor],
-    ) -> dict[str, torch.Tensor]:
+        y_data_output: Batch,
+    ) -> Batch:
         """Select only the variables that the model predicts."""
         y_reduced = {}
         for dataset_name, y_dataset in y_data_output.items():
             dataset_indices = self.data_indices[dataset_name]
             if dataset_indices.model_output_in_data_output_is_identity:
-                y_reduced[dataset_name] = y_dataset
+                y_reduced[dataset_name] = y_dataset.data
             elif dataset_indices.model_output_in_data_output_is_contiguous:
-                y_reduced[dataset_name] = y_dataset.narrow(
-                    -1,
-                    dataset_indices.model_output_in_data_output_contiguous_start,
-                    dataset_indices.model_output_in_data_output_contiguous_length,
-                )
+                start = dataset_indices.model_output_in_data_output_contiguous_start
+                length = dataset_indices.model_output_in_data_output_contiguous_length
+                y_reduced[dataset_name] = y_dataset.select(variables=slice(start, start + length)).data
             else:
-                var_idx = torch.as_tensor(
-                    dataset_indices.model_output_positions_in_data_output,
-                    device=y_dataset.device,
-                    dtype=torch.long,
-                )
-                y_reduced[dataset_name] = y_dataset.index_select(-1, var_idx)
+                y_reduced[dataset_name] = y_dataset.select(
+                    variables=dataset_indices.model_output_positions_in_data_output,
+                ).data
             LOGGER.debug(
                 "SHAPE: y_model_output[%s].shape = %s",
                 dataset_name,
-                list(y_reduced[dataset_name].shape),
+                (
+                    y_reduced[dataset_name].shape
+                    if hasattr(y_reduced[dataset_name], "shape")
+                    else [t.shape for t in y_reduced[dataset_name]]
+                ),
             )
-        return y_reduced
+        return y_data_output.with_data(y_reduced)
 
     def compute_dataset_loss_metrics(
         self,
-        y_pred: torch.Tensor,
-        y: torch.Tensor,
+        y_pred: SourceView,
+        y: SourceView,
         dataset_name: str,
         validation_mode: bool = False,
-        metric_prediction: dict[str, torch.Tensor] | None = None,
-        metric_target: dict[str, torch.Tensor] | None = None,
+        metric_prediction: Batch | None = None,
+        metric_target: Batch | None = None,
         **kwargs,
-    ) -> tuple[torch.Tensor | None, dict[str, torch.Tensor], torch.Tensor]:
+    ) -> tuple[torch.Tensor | None, dict[str, torch.Tensor], SourceView]:
         """Compute loss according to the objective and validation metrics in clean-state space."""
         y_pred_full, y_full, grid_shard_slice = self._prepare_tensors_for_loss(
             y_pred,
@@ -469,10 +479,10 @@ class TransportTraining(BaseTransportTraining):
 
     def forward(
         self,
-        x: dict[str, torch.Tensor],
-        conditioned_target: dict[str, torch.Tensor],
+        x: Batch,
+        conditioned_target: Batch,
         condition: dict[str, torch.Tensor],
-    ) -> dict[str, torch.Tensor]:
+    ) -> Batch:
         return self.transport_objective.forward(x, conditioned_target, condition)
 
     def _compute_loss(
@@ -495,9 +505,33 @@ class TransportTraining(BaseTransportTraining):
             **kwargs,
         )
 
+    def sample(
+        self,
+        batch: Batch,
+        *,
+        task_kwargs: dict | None = None,
+        schedule_params: dict | None = None,
+        sampler_params: dict | None = None,
+        **kwargs,
+    ) -> Batch:
+        """Sample from a full task batch using the deterministic target-template pattern."""
+        assert isinstance(batch, Batch), "batch must be a Batch instance"
+        task_kwargs = {} if task_kwargs is None else task_kwargs
+        x = self.task.get_inputs(batch, data_indices=self.data_indices)
+        _, target_template = self.task.get_targets(batch, **task_kwargs)
+        return self.model.model.sample(
+            x,
+            target_template=target_template,
+            model_comm_group=self.model_comm_group,
+            grid_shard_sizes=self.grid_shard_sizes,
+            schedule_params=schedule_params,
+            sampler_params=sampler_params,
+            **kwargs,
+        )
+
     def _step(
         self,
-        batch: dict[str, torch.Tensor],
+        batch: Batch,
         validation_mode: bool = False,
     ) -> TrainingStepOutput:
         """Run one training or validation step for the selected transport objective."""
@@ -510,14 +544,15 @@ class TransportTraining(BaseTransportTraining):
 
         metric_prediction = None
         metric_target = None
-        plot_kwargs: dict[str, dict[str, torch.Tensor]] = {}
+        plot_kwargs: dict[str, dict[str, SourceView]] = {}
         if validation_mode:
             conditioned_endpoint = self.prediction_mode.reconstruct_prediction(
                 prepared_objective.conditioned_target,
                 prepared_target,
             )
             plot_kwargs["auxiliary_output"] = {
-                dataset_name: target.detach() for dataset_name, target in conditioned_endpoint.items()
+                dataset_name: target.apply_func(lambda data, **_: data.detach())
+                for dataset_name, target in conditioned_endpoint.items()
             }
             endpoint_prediction = self.transport_objective.reconstruct_endpoint(prediction, prepared_objective)
             metric_prediction = self.prediction_mode.reconstruct_prediction(endpoint_prediction, prepared_target)

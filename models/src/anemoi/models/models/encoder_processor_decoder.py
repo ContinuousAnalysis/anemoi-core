@@ -310,7 +310,7 @@ class AnemoiModelEncProcDec(BaseGraphModel):
                 dst_coords=hidden_coordinates,
                 model_comm_group=model_comm_group,
             )
-            encoder_edge_attr = encoder_edge_attr.to(x_data_latent.device)
+            encoder_edge_attr = encoder_edge_attr.to(x_data_latent.device)  # todo SL: remove device movement
             encoder_edge_index = encoder_edge_index.to(x_data_latent.device)
 
             enc_shard_info = BipartiteGraphShardInfo(
@@ -342,7 +342,7 @@ class AnemoiModelEncProcDec(BaseGraphModel):
             batch_size=batch_size,
             model_comm_group=model_comm_group,
         )
-        processor_edge_attr = processor_edge_attr.to(x_latent.device)
+        processor_edge_attr = processor_edge_attr.to(x_latent.device)  # todo SL: remove device movement
         processor_edge_index = processor_edge_index.to(x_latent.device)
 
         x_latent_proc = self.processor(
@@ -386,7 +386,7 @@ class AnemoiModelEncProcDec(BaseGraphModel):
                 dst_coords=data_coords,
                 model_comm_group=model_comm_group,
             )
-            decoder_edge_attr = decoder_edge_attr.to(x_latent.device)
+            decoder_edge_attr = decoder_edge_attr.to(x_latent.device)  # todo SL: remove device movement
             decoder_edge_index = decoder_edge_index.to(x_latent.device)
 
             dec_shard_info = BipartiteGraphShardInfo(

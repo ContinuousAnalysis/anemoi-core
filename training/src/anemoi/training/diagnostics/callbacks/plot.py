@@ -1048,7 +1048,8 @@ class BasePlotAdditionalMetrics(BasePerBatchPlotCallback):
         dataset_name: str,
         outputs: TrainingStepOutput,
         batch: Batch,
-    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        auxiliary_output: dict[str, SourceView] | None = None,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray | None]:
         """Build the plotting fields and coordinates for a sparse/observation dataset.
 
         Scattered observations have *different* locations at input and output times, so
@@ -1061,8 +1062,8 @@ class BasePlotAdditionalMetrics(BasePerBatchPlotCallback):
 
         Returns
         -------
-        tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]
-            ``(input_latlons, output_latlons, x, y_true, y_pred)``.
+        tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray | None]
+            ``(input_latlons, output_latlons, x, y_true, y_pred, auxiliary)``.
         """
         view = batch[dataset_name]
         feature_indices = pl_module.data_indices[dataset_name].data.output.full
@@ -1082,6 +1083,14 @@ class BasePlotAdditionalMetrics(BasePerBatchPlotCallback):
             coords = sub_view.coordinates[self.sample_idx]
             return field.numpy(), np.rad2deg(coords.detach().cpu().numpy())
 
+        def _output_field(output_view: SourceView) -> np.ndarray:
+            output_view = self._align_output_metadata(output_view, feature_indices)
+            output_view = self.post_processors[dataset_name](
+                output_view.apply_func(lambda t, **_: t.detach().cpu()),
+                in_place=False,
+            )
+            return output_view.data[self.sample_idx].numpy()
+
         # Input panel: observations at the analysis (last input) timestep.
         input_view = view.select_time(input_indices[-1]).select(variables=feature_indices)
         x, input_latlons = _field_and_coords(input_view)
@@ -1091,14 +1100,13 @@ class BasePlotAdditionalMetrics(BasePerBatchPlotCallback):
         y_true, output_latlons = _field_and_coords(target_view)
 
         # Prediction (already at the output/target observation locations).
-        prediction = self._align_output_metadata(outputs.predictions[0][dataset_name], feature_indices)
-        prediction = self.post_processors[dataset_name](
-            prediction.apply_func(lambda t, **_: t.detach().cpu()),
-            in_place=False,
-        )
-        y_pred = prediction.data[self.sample_idx].numpy()
+        y_pred = _output_field(outputs.predictions[0][dataset_name])
 
-        return input_latlons, output_latlons, x, y_true, y_pred
+        auxiliary = None
+        if auxiliary_output is not None and dataset_name in auxiliary_output:
+            auxiliary = _output_field(auxiliary_output[dataset_name])
+
+        return input_latlons, output_latlons, x, y_true, y_pred, auxiliary
 
 
 class PlotSample(BasePlotAdditionalMetrics):
@@ -1220,7 +1228,7 @@ class PlotSample(BasePlotAdditionalMetrics):
         batch: dict[str, torch.Tensor],
         batch_idx: int,
         epoch: int,
-        auxiliary_output: dict[str, torch.Tensor] | None = None,
+        auxiliary_output: dict[str, SourceView] | None = None,
     ) -> None:
         logger = trainer.logger
 
@@ -1240,11 +1248,12 @@ class PlotSample(BasePlotAdditionalMetrics):
             local_rank = pl_module.local_rank
 
             if _is_sparse_dataset(batch, dataset_name):
-                input_latlons, output_latlons, x, y_true, y_pred = self._sparse_sample(
+                input_latlons, output_latlons, x, y_true, y_pred, auxiliary = self._sparse_sample(
                     pl_module,
                     dataset_name,
                     outputs,
                     batch,
+                    auxiliary_output=auxiliary_output,
                 )
                 fig = self._make_figure(
                     plot_parameters_dict,
@@ -1252,7 +1261,7 @@ class PlotSample(BasePlotAdditionalMetrics):
                     x,
                     y_true,
                     y_pred,
-                    auxiliary=None,
+                    auxiliary=auxiliary,
                     sparse=True,
                     output_latlons=output_latlons,
                 )

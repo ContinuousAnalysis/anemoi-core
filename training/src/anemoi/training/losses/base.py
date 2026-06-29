@@ -241,8 +241,11 @@ class BaseLoss(nn.Module, ABC):
                 keepdim=True,
             )
 
-        dims = [layout.batch, layout.time, layout.ensemble]
-        out = torch.mean(space_time_reduced, dim=tuple([f for f in dims if f is not None])).squeeze()
+        dims = tuple(f for f in (layout.batch, layout.time, layout.ensemble) if f is not None)
+        if dims:
+            out = torch.mean(space_time_reduced, dim=dims).squeeze()
+        else:
+            out = space_time_reduced.squeeze()
 
         return out if group is None else reduce_tensor(out, group)
 

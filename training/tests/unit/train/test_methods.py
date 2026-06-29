@@ -185,17 +185,21 @@ class DummyTransportModel(DummyModel):
             return pred
 
         if isinstance(pred, dict):
+            conditioned_target_batch = conditioned_target if isinstance(conditioned_target, Batch) else None
+            conditioned_target_data = (
+                conditioned_target.data if isinstance(conditioned_target, Batch) else conditioned_target
+            )
             out: dict[str, torch.Tensor] = {}
             for dataset_name, pred_tensor in pred.items():
                 condition_tensor = condition[dataset_name]
-                conditioned_target_tensor = conditioned_target[dataset_name]
+                conditioned_target_tensor = conditioned_target_data[dataset_name]
                 assert condition_tensor.shape[0] == pred_tensor.shape[0]
                 if not all(condition_tensor.shape[i] == 1 for i in range(1, condition_tensor.ndim)):
                     return pred
                 if conditioned_target_tensor.ndim == 4:
                     conditioned_target_tensor = conditioned_target_tensor.unsqueeze(1)
                 out[dataset_name] = conditioned_target_tensor + 0.1 * pred_tensor
-            return out
+            return conditioned_target_batch.with_data(out) if conditioned_target_batch is not None else out
         return pred
 
 
@@ -482,14 +486,29 @@ def _transport_objective_with_source(
     return TransportObjective(module)
 
 
+class _DataBatch:
+    def __init__(self, data: dict[str, torch.Tensor]) -> None:
+        self.data = data
+
+    def __getitem__(self, dataset_name: str) -> torch.Tensor:
+        return self.data[dataset_name]
+
+    def keys(self):
+        return self.data.keys()
+
+    def with_data(self, data: dict[str, torch.Tensor]) -> _DataBatch:
+        return _DataBatch(data)
+
+
 def _prepared_target_with_reference_source() -> PreparedPredictionTarget:
     clean = {"data": torch.full((1, 1, 1, 2, 1), 3.0)}
     reference = {"data": torch.full_like(clean["data"], 2.0)}
+    clean_batch = _DataBatch(clean)
     return PreparedPredictionTarget(
-        model_target=clean,
-        loss_target=clean,
+        model_target=clean_batch,
+        loss_target=clean_batch,
         loss_target_layout=IndexSpace.MODEL_OUTPUT,
-        metric_target=clean,
+        metric_target=clean_batch,
         aux={"transport_reference_source": reference},
     )
 
@@ -511,7 +530,7 @@ def test_transport_source_default_is_gaussian(monkeypatch: pytest.MonkeyPatch) -
 
 def test_transport_source_rejects_missing_reference_state_source() -> None:
     objective = _transport_objective_with_source("reference_state")
-    clean = {"data": torch.zeros(1, 1, 1, 2, 1)}
+    clean = _DataBatch({"data": torch.zeros(1, 1, 1, 2, 1)})
     prepared = PreparedPredictionTarget(
         model_target=clean,
         loss_target=clean,
@@ -547,11 +566,12 @@ def test_stochastic_interpolant_prepare_builds_bridge_and_drift(
 
     anchor = {"data": torch.full((1, 1, 1, 2, 1), 3.0)}
     clean = {"data": torch.full((1, 1, 1, 2, 1), 5.0)}
+    clean_batch = _DataBatch(clean)
     prepared = PreparedPredictionTarget(
-        model_target=clean,
-        loss_target=clean,
+        model_target=clean_batch,
+        loss_target=clean_batch,
         loss_target_layout=IndexSpace.MODEL_OUTPUT,
-        metric_target=clean,
+        metric_target=clean_batch,
         aux={
             "transport_reference_source": anchor,
         },
@@ -1049,6 +1069,61 @@ def test_edm_transport_training_step_with_forecaster() -> None:
     assert output.predictions[0]["data"].shape == (b, 1, e, g, v)
 
 
+def test_transport_training_sample_builds_target_template_like_deterministic_training() -> None:
+    data_indices = _data_indices_single()
+    forecaster = TransportTraining.__new__(TransportTraining)
+    pl.LightningModule.__init__(forecaster)
+    _wire_training_module(forecaster, data_indices=data_indices, config=_CFG_DIFFUSION)
+
+    layout = TensorLayout(batch=0, time=1, ensemble=2, grid=3, variables=4)
+    batch = Batch(
+        data={"data": torch.randn(1, 2, 1, 3, 2)},
+        coordinates={"data": torch.zeros(3, 2)},
+        metadata={"static_coords": frozenset({"data"})},
+        layouts={"data": layout},
+        variables={"data": ["A", "B"]},
+        statistics={"data": {}},
+    )
+    x = batch.select(time=[0])
+    target_template = batch.select(time=[1]).with_data({"data": torch.empty(1, 1, 1, 3, 0)})
+    target_values = batch.select(time=[1])
+
+    task = MagicMock()
+    task.get_inputs.return_value = x
+    task.get_targets.return_value = (target_values, target_template)
+    forecaster.task = task
+
+    class _CoreModel:
+        def __init__(self) -> None:
+            self.call = None
+
+        def sample(self, *args, **kwargs):
+            self.call = {"args": args, "kwargs": kwargs}
+            return kwargs["target_template"]
+
+    core_model = _CoreModel()
+    forecaster.model = SimpleNamespace(model=core_model)
+
+    out = forecaster.sample(
+        batch,
+        task_kwargs={"rollout_step": 0},
+        schedule_params={"num_steps": 2},
+        sampler_params={"sampler": "heun"},
+        marker="value",
+    )
+
+    assert out is target_template
+    task.get_inputs.assert_called_once_with(batch, data_indices=forecaster.data_indices)
+    task.get_targets.assert_called_once_with(batch, rollout_step=0)
+    assert core_model.call["args"] == (x,)
+    assert core_model.call["kwargs"]["target_template"] is target_template
+    assert core_model.call["kwargs"]["model_comm_group"] is forecaster.model_comm_group
+    assert core_model.call["kwargs"]["grid_shard_sizes"] is forecaster.grid_shard_sizes
+    assert core_model.call["kwargs"]["schedule_params"] == {"num_steps": 2}
+    assert core_model.call["kwargs"]["sampler_params"] == {"sampler": "heun"}
+    assert core_model.call["kwargs"]["marker"] == "value"
+
+
 # ── EnsembleTraining: expand helper ────────────────────────────────────────────
 
 
@@ -1513,15 +1588,15 @@ def test_edm_transport_training_uses_data_full_target_layout(
     captured: dict[str, Any] = {}
 
     def _compute_loss_metrics_stub(
-        y_pred: dict[str, torch.Tensor],
-        y: dict[str, torch.Tensor],
+        y_pred: Batch,
+        y: Batch,
         **kwargs: Any,
-    ) -> tuple[torch.Tensor, dict, dict[str, torch.Tensor]]:
-        captured["pred_vars"] = y_pred["data"].shape[-1]
-        captured["target_vars"] = y["data"].shape[-1]
+    ) -> tuple[torch.Tensor, dict, Batch]:
+        captured["pred_vars"] = y_pred.data["data"].shape[-1]
+        captured["target_vars"] = y.data["data"].shape[-1]
         captured["pred_layout"] = kwargs["pred_layout"]
         captured["target_layout"] = kwargs["target_layout"]
-        pred = y_pred["data"]
+        pred = y_pred.data["data"]
         return torch.zeros(1, dtype=pred.dtype, device=pred.device), {}, y_pred
 
     monkeypatch.setattr(forecaster, "compute_loss_metrics", _compute_loss_metrics_stub)
@@ -1529,7 +1604,14 @@ def test_edm_transport_training_uses_data_full_target_layout(
 
     b, e, g = 2, 1, 4
     full_v = len(name_to_index)
-    batch = {"data": torch.randn(b, 2, e, g, full_v)}
+    batch = Batch(
+        data={"data": torch.randn(b, 2, e, g, full_v)},
+        coordinates={"data": torch.zeros(g, 2)},
+        metadata={"static_coords": frozenset({"data"})},
+        layouts={"data": TensorLayout(batch=0, time=1, ensemble=2, grid=3, variables=4)},
+        variables={"data": list(name_to_index)},
+        statistics={"data": {}},
+    )
     forecaster._step(batch=batch, validation_mode=False)
 
     assert captured["pred_layout"] == IndexSpace.MODEL_OUTPUT
@@ -1606,15 +1688,15 @@ def test_stochastic_interpolant_training_uses_model_output_target_layout(
     captured: dict[str, Any] = {}
 
     def _compute_loss_metrics_stub(
-        y_pred: dict[str, torch.Tensor],
-        y: dict[str, torch.Tensor],
+        y_pred: Batch,
+        y: Batch,
         **kwargs: Any,
-    ) -> tuple[torch.Tensor, dict, dict[str, torch.Tensor]]:
-        captured["pred_vars"] = y_pred["data"].shape[-1]
-        captured["target_vars"] = y["data"].shape[-1]
+    ) -> tuple[torch.Tensor, dict, Batch]:
+        captured["pred_vars"] = y_pred.data["data"].shape[-1]
+        captured["target_vars"] = y.data["data"].shape[-1]
         captured["pred_layout"] = kwargs["pred_layout"]
         captured["target_layout"] = kwargs["target_layout"]
-        pred = y_pred["data"]
+        pred = y_pred.data["data"]
         return torch.zeros(1, dtype=pred.dtype, device=pred.device), {}, y_pred
 
     monkeypatch.setattr(forecaster, "compute_loss_metrics", _compute_loss_metrics_stub)
@@ -1622,7 +1704,14 @@ def test_stochastic_interpolant_training_uses_model_output_target_layout(
 
     b, e, g = 2, 1, 4
     full_v = len(name_to_index)
-    batch = {"data": torch.randn(b, 2, e, g, full_v)}
+    batch = Batch(
+        data={"data": torch.randn(b, 2, e, g, full_v)},
+        coordinates={"data": torch.zeros(g, 2)},
+        metadata={"static_coords": frozenset({"data"})},
+        layouts={"data": TensorLayout(batch=0, time=1, ensemble=2, grid=3, variables=4)},
+        variables={"data": list(name_to_index)},
+        statistics={"data": {}},
+    )
     forecaster._step(batch=batch, validation_mode=False)
 
     assert captured["pred_layout"] == IndexSpace.MODEL_OUTPUT
@@ -1638,15 +1727,15 @@ def test_transport_validation_returns_conditioned_target_for_plotting(
 
     class _DummyTransportObjective:
         def __init__(self) -> None:
-            self.conditioned_target: dict[str, torch.Tensor] | None = None
+            self.conditioned_target: Batch | None = None
 
         def prepare(self, prepared: PreparedPredictionTarget) -> PreparedTransportObjective:
-            self.conditioned_target = {
-                dataset_name: target + 3.0 for dataset_name, target in prepared.model_target.items()
+            conditioned_data = {
+                dataset_name: target + 3.0 for dataset_name, target in prepared.model_target.data.items()
             }
+            self.conditioned_target = prepared.model_target.with_data(conditioned_data)
             condition = {
-                dataset_name: torch.zeros_like(target[..., :1])
-                for dataset_name, target in self.conditioned_target.items()
+                dataset_name: torch.zeros_like(target[..., :1]) for dataset_name, target in conditioned_data.items()
             }
             return PreparedTransportObjective(
                 conditioned_target=self.conditioned_target,
@@ -1660,26 +1749,26 @@ def test_transport_validation_returns_conditioned_target_for_plotting(
 
         def forward(
             self,
-            x: dict[str, torch.Tensor],
-            conditioned_target: dict[str, torch.Tensor],
+            x: Batch,
+            conditioned_target: Batch,
             condition: dict[str, torch.Tensor],
-        ) -> dict[str, torch.Tensor]:
+        ) -> Batch:
             del x, condition
             return conditioned_target
 
         def reconstruct_endpoint(
             self,
-            prediction: dict[str, torch.Tensor],
+            prediction: Batch,
             objective: PreparedTransportObjective,
-        ) -> dict[str, torch.Tensor]:
+        ) -> Batch:
             del objective
             return prediction
 
         def prepare_loss_prediction(
             self,
-            prediction: dict[str, torch.Tensor],
+            prediction: Batch,
             objective: PreparedTransportObjective,
-        ) -> dict[str, torch.Tensor]:
+        ) -> Batch:
             del objective
             return prediction
 
@@ -1696,26 +1785,33 @@ def test_transport_validation_returns_conditioned_target_for_plotting(
     forecaster.target_dataset_names = forecaster.dataset_names
 
     def _compute_loss_metrics_stub(
-        y_pred: dict[str, torch.Tensor],
-        y: dict[str, torch.Tensor],
+        y_pred: Batch,
+        y: Batch,
         **kwargs: Any,
-    ) -> tuple[torch.Tensor, dict, dict[str, torch.Tensor]]:
+    ) -> tuple[torch.Tensor, dict, Batch]:
         del y, kwargs
-        return torch.zeros(1, dtype=y_pred["data"].dtype), {}, y_pred
+        return torch.zeros(1, dtype=y_pred.data["data"].dtype), {}, y_pred
 
     monkeypatch.setattr(forecaster, "compute_loss_metrics", _compute_loss_metrics_stub)
     monkeypatch.setattr("torch.utils.checkpoint.checkpoint", lambda fn, *a, **kw: fn(*a, **kw))
 
-    batch = {"data": torch.randn(2, 2, 1, 4, len(_NAME_TO_INDEX))}
+    batch = Batch(
+        data={"data": torch.randn(2, 2, 1, 4, len(_NAME_TO_INDEX))},
+        coordinates={"data": torch.zeros(4, 2)},
+        metadata={"static_coords": frozenset({"data"})},
+        layouts={"data": TensorLayout(batch=0, time=1, ensemble=2, grid=3, variables=4)},
+        variables={"data": list(_NAME_TO_INDEX)},
+        statistics={"data": {}},
+    )
     output = forecaster._step(batch=batch, validation_mode=True)
 
     assert objective.conditioned_target is not None
     auxiliary_output = output.plot_kwargs["auxiliary_output"]
     torch.testing.assert_close(
-        auxiliary_output["data"],
-        objective.conditioned_target["data"],
+        auxiliary_output["data"].data,
+        objective.conditioned_target["data"].data,
     )
-    assert auxiliary_output["data"].requires_grad is False
+    assert auxiliary_output["data"].data.requires_grad is False
 
 
 def test_stochastic_interpolant_tendency_training_step_uses_model_output_drift_target(
@@ -1746,8 +1842,19 @@ def test_stochastic_interpolant_tendency_training_step_uses_model_output_drift_t
 
     b, e, g, v = 2, 1, 4, len(_NAME_TO_INDEX)
     n_model = len(data_indices["data"].model.output.full)
-    state_target = {"data": torch.randn(b, 1, e, g, v)}
-    tendency_target = {"data": torch.randn(b, 1, e, g, n_model)}
+
+    def _batch(data: torch.Tensor) -> Batch:
+        return Batch(
+            data={"data": data},
+            coordinates={"data": torch.zeros(g, 2)},
+            metadata={"static_coords": frozenset({"data"})},
+            layouts={"data": TensorLayout(batch=0, time=1, ensemble=2, grid=3, variables=4)},
+            variables={"data": list(_NAME_TO_INDEX)[: data.shape[-1]]},
+            statistics={"data": {}},
+        )
+
+    state_target = _batch(torch.randn(b, 1, e, g, v))
+    tendency_target = _batch(torch.randn(b, 1, e, g, n_model))
 
     class _DummyPredictionMode:
         def prepare_target(
@@ -1780,20 +1887,20 @@ def test_stochastic_interpolant_tendency_training_step_uses_model_output_drift_t
     captured: dict[str, Any] = {}
 
     def _compute_loss_metrics_stub(
-        y_pred: dict[str, torch.Tensor],
-        y: dict[str, torch.Tensor],
+        y_pred: Batch,
+        y: Batch,
         **kwargs: Any,
-    ) -> tuple[torch.Tensor, dict, dict[str, torch.Tensor]]:
-        captured["pred_vars"] = y_pred["data"].shape[-1]
-        captured["target_vars"] = y["data"].shape[-1]
+    ) -> tuple[torch.Tensor, dict, Batch]:
+        captured["pred_vars"] = y_pred.data["data"].shape[-1]
+        captured["target_vars"] = y.data["data"].shape[-1]
         captured["pred_layout"] = kwargs["pred_layout"]
         captured["target_layout"] = kwargs["target_layout"]
-        pred = y_pred["data"]
+        pred = y_pred.data["data"]
         return torch.zeros(1, dtype=pred.dtype, device=pred.device), {}, y_pred
 
     monkeypatch.setattr(forecaster, "compute_loss_metrics", _compute_loss_metrics_stub)
 
-    batch = {"data": torch.randn(b, 2, e, g, v)}
+    batch = _batch(torch.randn(b, 2, e, g, v))
     forecaster._step(batch=batch, validation_mode=False)
 
     assert captured["pred_layout"] == IndexSpace.MODEL_OUTPUT
@@ -1914,10 +2021,17 @@ def test_tendency_prediction_mode_prepare_metric_target_applies_imputer_inverse(
     mode = TendencyPredictionMode.__new__(TendencyPredictionMode)
     mode.module = _DummyModule()
 
-    metric_target = {"data": torch.randn(2, 1, 1, 4, 3, dtype=torch.float32)}
+    metric_target = Batch(
+        data={"data": torch.randn(2, 1, 1, 4, 3, dtype=torch.float32)},
+        coordinates={"data": torch.zeros(4, 2)},
+        metadata={"static_coords": frozenset({"data"})},
+        layouts={"data": TensorLayout(batch=0, time=1, ensemble=2, grid=3, variables=4)},
+        variables={"data": ["a", "b", "c"]},
+        statistics={"data": {}},
+    )
     prepared = PreparedPredictionTarget(
-        model_target={},
-        loss_target={},
+        model_target=metric_target,
+        loss_target=metric_target,
         loss_target_layout=IndexSpace.DATA_OUTPUT,
         metric_target=metric_target,
         aux={},
@@ -1927,7 +2041,23 @@ def test_tendency_prediction_mode_prepare_metric_target_applies_imputer_inverse(
 
     assert captured["dataset_name"] == "data"
     assert captured["post_processors"] == mode.module.model.post_processors
-    torch.testing.assert_close(prepared_metric_target["data"], metric_target["data"] + 7.0)
+    torch.testing.assert_close(prepared_metric_target.data["data"], metric_target.data["data"] + 7.0)
+
+
+def test_tendency_prediction_mode_prepare_target_rejects_sparse_obs() -> None:
+    mode = TendencyPredictionMode.__new__(TendencyPredictionMode)
+    mode.module = SimpleNamespace()
+    sparse_batch = Batch(
+        data={"obs": [torch.zeros(2, 1)]},
+        coordinates={"obs": [torch.zeros(2, 2)]},
+        metadata={"obs": {"boundaries": [(slice(0, 2),)]}},
+        layouts={"obs": TensorLayout(grid=0, variables=1, time_in_grid=True)},
+        variables={"obs": ["a"]},
+        statistics={"obs": {}},
+    )
+
+    with pytest.raises(NotImplementedError, match="Tendency prediction mode.*sparse"):
+        mode.prepare_target(sparse_batch, sparse_batch)
 
 
 def test_tendency_prediction_mode_compute_tendency_target_uses_step_processors() -> None:
