@@ -505,7 +505,7 @@ class TabularSourceView(SourceView):
             msg = "Cannot apply a loss to an empty sparse source view."
             raise ValueError(msg)
 
-        return torch.mean(torch.stack(losses))
+        return torch.stack(losses).mean(dim=0)
 
     def allgather(self, group: ProcessGroup | None) -> "TabularSourceView":
         """Allgather this view across the given process group.
