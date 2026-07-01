@@ -10,15 +10,18 @@
 import datetime
 import logging
 from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 import torch
 
-from anemoi.models.data.batch import Batch
 from anemoi.models.data_indices.collection import IndexCollection
 from anemoi.training.diagnostics.callbacks.plot_adapter import ForecasterPlotAdapter
 from anemoi.training.tasks.base import BaseTask
 from anemoi.utils.dates import frequency_to_string
 from anemoi.utils.dates import frequency_to_timedelta
+
+if TYPE_CHECKING:
+    from anemoi.models.data.batch import Batch
 
 LOGGER = logging.getLogger(__name__)
 

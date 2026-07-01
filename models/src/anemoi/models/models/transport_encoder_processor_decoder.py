@@ -9,6 +9,7 @@
 
 
 import logging
+from typing import TYPE_CHECKING
 from typing import Callable
 from typing import Optional
 
@@ -44,6 +45,9 @@ from anemoi.models.transport.data_helpers import Data
 from anemoi.models.transport.data_helpers import data_device
 from anemoi.models.transport.data_helpers import map_data
 from anemoi.utils.config import DotDict
+
+if TYPE_CHECKING:
+    from anemoi.models.data.views import SourceView
 
 LOGGER = logging.getLogger(__name__)
 
@@ -325,10 +329,7 @@ class AnemoiTransportModelEncProcDec(AnemoiModelEncProcDec):
         ensemble_size = self._get_consistent_dim(batch, 2)
 
         bse = batch_size * ensemble_size  # batch and ensemble dimensions are merged
-        in_out_sharded = self._resolve_in_out_sharded(
-            dataset_names=dataset_names,
-            grid_shard_sizes=grid_shard_sizes,
-        )
+        in_out_sharded = self._resolve_in_out_sharded(batch)
         for dataset_name in dataset_names:
             self._assert_valid_sharding(batch_size, ensemble_size, in_out_sharded[dataset_name], model_comm_group)
 
@@ -436,7 +437,6 @@ class AnemoiTransportModelEncProcDec(AnemoiModelEncProcDec):
                 conditioned_target[dataset_name],
                 x_data_latent_dict.get(dataset_name, None),
                 batch_size=bse,
-                grid_shard_sizes=grid_shard_sizes,
                 model_comm_group=model_comm_group,
                 dataset_name=dataset_name,
             )

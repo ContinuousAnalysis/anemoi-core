@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
 import torch
 from torch.utils.checkpoint import checkpoint
@@ -28,6 +29,9 @@ from anemoi.training.train.step_output import TrainingStepOutput
 from anemoi.training.utils.index_space import IndexSpace
 
 LOGGER = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from anemoi.models.data.views import SourceView
 
 
 class PredictionMode:
@@ -78,7 +82,7 @@ class StatePredictionMode(PredictionMode):
         x: Batch,
     ) -> PreparedPredictionTarget:
         del x
-        target_full, _ = self.module.task.get_targets(batch)
+        target_full, _ = self.module.task.get_targets(batch, data_indices=self.module.data_indices)
         target_data_output = self.module.get_data_output_target(target_full)
         model_target = self.module.reduce_data_output_target_to_model_output(target_data_output)
         return PreparedPredictionTarget(
@@ -246,7 +250,7 @@ class TendencyPredictionMode(PredictionMode):
             msg = "Tendency prediction mode is not implemented for sparse observation datasets."
             raise NotImplementedError(msg)
 
-        state_target, _ = self.module.task.get_targets(batch)
+        state_target, _ = self.module.task.get_targets(batch, data_indices=self.module.data_indices)
         y_data_output = self.module.get_data_output_target(state_target)
 
         pre_processors_tendencies = getattr(self.module.model, "pre_processors_tendencies", None)
@@ -518,7 +522,7 @@ class TransportTraining(BaseTransportTraining):
         assert isinstance(batch, Batch), "batch must be a Batch instance"
         task_kwargs = {} if task_kwargs is None else task_kwargs
         x = self.task.get_inputs(batch, data_indices=self.data_indices)
-        _, target_template = self.task.get_targets(batch, **task_kwargs)
+        _, target_template = self.task.get_targets(batch, data_indices=self.data_indices, **task_kwargs)
         return self.model.model.sample(
             x,
             target_template=target_template,

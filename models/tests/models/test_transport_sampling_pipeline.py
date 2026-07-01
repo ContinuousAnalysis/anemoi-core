@@ -410,9 +410,7 @@ def test_transport_decoder_uses_target_assembly_when_encoder_data_output_is_disa
     model.node_attributes = _EmptyNodeAttributes()
     model.latent_skip = False
     model._get_consistent_dim = lambda _batch, dim: 1
-    model._resolve_in_out_sharded = lambda dataset_names, grid_shard_sizes: {
-        dataset_name: False for dataset_name in dataset_names
-    }
+    model._resolve_in_out_sharded = lambda batch: {dataset_name: False for dataset_name in batch.keys()}
     model._assert_valid_sharding = lambda *_args, **_kwargs: None
     model._build_conditioning_kwargs = lambda *_args, **_kwargs: ({"obs": {}}, {}, {"obs": {}})
     model._hidden_coordinates = lambda: torch.zeros(5, 2)
@@ -843,9 +841,7 @@ def test_tendency_sparse_sampling_rejects_sparse_obs(monkeypatch: pytest.MonkeyP
     model.node_attributes = _EmptyNodeAttributes()
     model._hidden_coordinates = lambda: torch.zeros(5, 2)
     model._get_consistent_dim = lambda _batch, dim: 2 if dim == 0 else 1
-    model._resolve_in_out_sharded = lambda dataset_names, grid_shard_sizes: {
-        dataset_name: False for dataset_name in dataset_names
-    }
+    model._resolve_in_out_sharded = lambda batch: {dataset_name: False for dataset_name in batch.keys()}
     model._assert_valid_sharding = lambda *_args, **_kwargs: None
     model._build_conditioning_kwargs = lambda *_args, **_kwargs: ({"obs": {}}, {}, {"obs": {}})
     _configure_sampling_model(model, {"obs": (2, 1, 1)})

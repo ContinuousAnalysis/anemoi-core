@@ -230,11 +230,11 @@ class EnsembleTraining(BaseTrainingModule):
 
     def _step(
         self,
-        batch: dict[str, torch.Tensor],
+        batch: Batch,
         validation_mode: bool = False,
     ) -> TrainingStepOutput:
         """Training / validation step."""
-        loss = torch.zeros(1, dtype=next(iter(batch.values())).dtype, device=self.device, requires_grad=False)
+        loss = torch.zeros(1, dtype=next(iter(batch.values())).data.dtype, device=self.device, requires_grad=False)
         metrics = {}
         y_preds = []
 
@@ -245,7 +245,7 @@ class EnsembleTraining(BaseTrainingModule):
         for task_step_kwargs in task_steps:
             y_pred = self(x, **task_step_kwargs)
 
-            y = self.task.get_targets(batch, **task_step_kwargs)
+            y, _ = self.task.get_targets(batch, data_indices=self.data_indices, **task_step_kwargs)
 
             loss_next, metrics_next, y_preds_next = checkpoint(
                 self.compute_loss_metrics,
