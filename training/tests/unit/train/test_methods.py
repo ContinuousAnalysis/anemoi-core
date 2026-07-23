@@ -27,6 +27,7 @@ from anemoi.models.data.views import SourceView
 from anemoi.models.data.views import create_source_view
 from anemoi.models.data_indices.collection import IndexCollection
 from anemoi.models.preprocessing import Processors
+from anemoi.models.preprocessing.imputer import InputImputer
 from anemoi.models.preprocessing.normalizer import InputNormalizer
 from anemoi.models.transport import EdmSettings
 from anemoi.models.transport import StochasticInterpolantSettings
@@ -747,6 +748,71 @@ def test_state_prepare_target_imputes_model_target_and_keeps_loss_nans() -> None
     assert not torch.isnan(prepared.model_target["data"].data).any()
     assert torch.isnan(prepared.loss_target["data"].data).any()
     assert torch.isnan(prepared.aux["model_target_missing"]["data"].data).any()
+
+
+def test_state_model_target_and_missing_stay_consistent_with_real_processors() -> None:
+    """model_target and model_target_missing differ only at missing observations.
+
+    Both variants run through the exact same normalizer; only the imputer is
+    skipped for the NaN-preserving variant. Observed values must therefore be
+    identical, NaNs must sit exactly where the raw target had missing
+    observations, and imputed positions must hold the normalized fill value.
+    """
+    data_indices = _data_indices_single()
+    task = Forecaster(multistep_input=1, multistep_output=1, timestep="6h")
+    forecaster = TransportTraining.__new__(TransportTraining)
+    pl.LightningModule.__init__(forecaster)
+    _wire_training_module(forecaster, data_indices=data_indices, config=_CFG_EMPTY, task=task)
+    processors = Processors(
+        [
+            ("imputer", InputImputer(config=DictConfig({"default": "mean"}))),
+            ("normalizer", InputNormalizer(config=DictConfig({"default": "mean-std"}))),
+        ],
+    )
+    forecaster.model = SimpleNamespace(
+        pre_processors={"data": processors},
+        post_processors={"data": Processors([], inverse=True)},
+    )
+    mode = StatePredictionMode(forecaster)
+
+    statistics = {
+        "mean": torch.tensor([1.0, 2.0]),
+        "stdev": torch.tensor([2.0, 4.0]),
+        "minimum": torch.tensor([-10.0, -10.0]),
+        "maximum": torch.tensor([10.0, 10.0]),
+    }
+    data = torch.randn(1, 2, 1, 4, len(_NAME_TO_INDEX))
+    data[0, 1, 0, 2, 0] = float("nan")  # missing observation at the output step
+    batch = Batch(
+        data={"data": data},
+        coordinates={"data": torch.zeros(4, 2)},
+        metadata={"static_coords": frozenset({"data"})},
+        layouts={"data": TensorLayout(batch=0, time=1, ensemble=2, grid=3, variables=4)},
+        variables={"data": list(_NAME_TO_INDEX)},
+        statistics={"data": statistics},
+    )
+
+    prepared = mode.prepare_target(batch, x=None)
+
+    model_target = prepared.model_target["data"].data
+    missing = prepared.aux["model_target_missing"]["data"].data
+    assert model_target.shape == missing.shape
+
+    # NaNs sit exactly where the raw output-step target had missing values.
+    raw_output_step = data[:, 1:2]
+    assert torch.equal(torch.isnan(missing), torch.isnan(raw_output_step))
+    assert not torch.isnan(model_target).any()
+
+    # Identical normalization at observed positions.
+    observed = ~torch.isnan(missing)
+    torch.testing.assert_close(model_target[observed], missing[observed])
+
+    # Imputed positions hold the normalized mean fill value ((mean-mean)/std == 0).
+    torch.testing.assert_close(model_target[~observed], torch.zeros_like(model_target[~observed]))
+
+    # The loss target is the same NaN-preserving normalized target (full == model
+    # output space for this index collection).
+    torch.testing.assert_close(prepared.loss_target["data"].data, missing, equal_nan=True)
 
 
 # ── BaseTrainingModule: calculate_val_metrics ──────────────────────────────────
