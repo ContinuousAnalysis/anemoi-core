@@ -537,6 +537,41 @@ def test_transport_source_default_is_gaussian(monkeypatch: pytest.MonkeyPatch) -
     torch.testing.assert_close(source["data"], torch.full_like(prepared.model_target["data"], 7.0))
 
 
+def test_state_reference_source_is_lazy_and_handles_diagnostic_variables() -> None:
+    """The reference-state source is built lazily from the full batch.
+
+    Diagnostic (output-only) variables are not part of the model input, so the
+    projection must draw from the full batch rather than the model inputs, and
+    it must only be materialised when a reference_state source is requested.
+    """
+    name_to_index = {"A": 0, "B": 1, "D": 2}
+    data_indices = {"data": _make_minimal_index_collection(name_to_index, diagnostic=["D"])}
+    task = Forecaster(multistep_input=2, multistep_output=1, timestep="6h")
+
+    forecaster = TransportTraining.__new__(TransportTraining)
+    pl.LightningModule.__init__(forecaster)
+    _wire_training_module(forecaster, data_indices=data_indices, config=_CFG_EMPTY, n_step_input=2, task=task)
+    forecaster.model = SimpleNamespace(
+        pre_processors={"data": Processors([])},
+        post_processors={"data": Processors([], inverse=True)},
+    )
+    mode = StatePredictionMode(forecaster)
+
+    batch = _make_gridded_batch(torch.randn(1, 3, 1, 4, len(name_to_index)), variables=list(name_to_index))
+    prepared = mode.prepare_target(batch, x=None)
+
+    reference_factory = prepared.aux["transport_reference_source"]
+    assert callable(reference_factory), "gaussian/zero sources must not pay for the reference projection"
+
+    reference = reference_factory()
+    assert reference["data"].data.shape[-1] == len(data_indices["data"].model.output)
+    # The reference is the last input step of the full batch in model-output space.
+    torch.testing.assert_close(
+        reference["data"].data[:, 0],
+        batch["data"].data[:, 1][..., data_indices["data"].data.output.full],
+    )
+
+
 def test_transport_source_rejects_missing_reference_state_source() -> None:
     objective = _transport_objective_with_source("reference_state")
     clean = _DataBatch({"data": torch.zeros(1, 1, 1, 2, 1)})

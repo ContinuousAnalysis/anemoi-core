@@ -61,27 +61,31 @@ class PredictionMode:
 class StatePredictionMode(PredictionMode):
     """Prediction mode where the model learns the future state directly."""
 
-    def _reference_state_target_space(self, x: Batch) -> Batch:
-        # Use the latest (preprocessed) input state as a source field, selecting
-        # the same variables that the model predicts for the future state.
+    def _reference_state_target_space(self, batch: Batch) -> Batch:
+        # Use the latest input state as a source field, selecting the same
+        # variables that the model predicts for the future state. The state is
+        # taken from the full batch rather than the model inputs because
+        # diagnostic output variables are not part of the model input, and it
+        # is normalized (with imputation) like the model inputs.
+        reference_state = self.module.preprocess_inputs(batch.select(time=self.module.n_step_input - 1))
         reference_data: dict[str, torch.Tensor] = {}
-        for dataset_name, input_view in x.items():
-            output_names = self.module.data_indices[dataset_name].model.output.ordered_names
-            var_idx = [input_view.name_to_index[name] for name in output_names]
-            reference_step = input_view.select(time=self.module.n_step_input - 1, variables=var_idx).data
+        for dataset_name, state_view in reference_state.items():
+            var_idx = self.module.data_indices[dataset_name].data.output.full.tolist()
+            reference_step = state_view.select(variables=var_idx).data
             if self.module.n_step_output > 1:
                 if isinstance(reference_step, list):
                     msg = "Multi-step reference-state transport sources are not supported for sparse datasets."
                     raise NotImplementedError(msg)
                 reference_step = reference_step.expand(-1, self.module.n_step_output, -1, -1, -1)
             reference_data[dataset_name] = reference_step
-        return x.with_data(reference_data)
+        return self.module.reduce_data_output_target_to_model_output(reference_state.with_data(reference_data))
 
     def prepare_target(
         self,
         batch: Batch,
         x: Batch,
     ) -> PreparedPredictionTarget:
+        del x
         raw_target, _ = self.module.task.get_targets(batch, data_indices=self.module.data_indices)
         target_full = self.module.preprocess_targets(raw_target)
         target_data_output = self.module.get_data_output_target(target_full)
@@ -92,9 +96,9 @@ class StatePredictionMode(PredictionMode):
             loss_target_layout=IndexSpace.DATA_FULL,
             metric_target=target_full,
             aux={
-                # For state prediction, the reference source is already in the
-                # same state space as the target, so store it directly.
-                "transport_reference_source": self._reference_state_target_space(x),
+                # Build the reference-state source lazily so gaussian and zero
+                # sources never pay for (or crash on) this projection.
+                "transport_reference_source": lambda: self._reference_state_target_space(batch),
             },
         )
 
