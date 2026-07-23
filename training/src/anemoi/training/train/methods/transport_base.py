@@ -130,6 +130,7 @@ class TransportObjective:
         x: Batch,
         conditioned_target: Batch,
         condition: dict[str, torch.Tensor],
+        target_forcing: Batch | None = None,
     ) -> Batch:
         raise NotImplementedError
 

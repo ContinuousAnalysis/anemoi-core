@@ -69,12 +69,14 @@ class StochasticInterpolantTransportObjective(TransportObjective):
         x: Batch,
         conditioned_target: Batch,
         condition: dict[str, torch.Tensor],
+        target_forcing: Batch | None = None,
     ) -> Batch:
         return self.module.model.model(
             x,
             conditioned_target,
             condition,
             model_comm_group=self.module.model_comm_group,
+            target_forcing=target_forcing,
         )
 
     def reconstruct_endpoint(
@@ -174,7 +176,7 @@ class StochasticInterpolantTransportObjective(TransportObjective):
                     noise_scale=self._noise_scale,
                 ),
             )
-            for dataset_name in interpolant_state.keys()
+            for dataset_name in interpolant_state.data
         }
 
     def _sample_training_time(

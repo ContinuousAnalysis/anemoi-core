@@ -152,6 +152,7 @@ class EDMDiffusionModelObjective(TransportModelObjective):
         grid_shard_sizes: DatasetShardSizes | None = None,
         schedule_params: Optional[dict] = None,
         sampler_params: Optional[dict] = None,
+        target_forcing: Optional[Batch] = None,
         **kwargs,
     ) -> Batch:
         """Sample from an EDM diffusion model."""
@@ -207,6 +208,7 @@ class EDMDiffusionModelObjective(TransportModelObjective):
                 sigma_arg,
                 model_comm_group=comm_arg,
                 grid_shard_sizes=shard_sizes_arg,
+                target_forcing=target_forcing,
             )
 
         return sampler_instance.sample(
@@ -284,6 +286,7 @@ class StochasticInterpolantModelObjective(TransportModelObjective):
         grid_shard_sizes: DatasetShardSizes | None = None,
         schedule_params: Optional[dict] = None,
         sampler_params: Optional[dict] = None,
+        target_forcing: Optional[Batch] = None,
         **kwargs,
     ) -> Batch:
         x_device = x.device
@@ -324,6 +327,7 @@ class StochasticInterpolantModelObjective(TransportModelObjective):
                 time_arg,
                 model_comm_group=comm_arg,
                 grid_shard_sizes=shard_sizes_arg,
+                target_forcing=target_forcing,
             )
 
         sampler_instance = _build_inference_sampler(

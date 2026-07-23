@@ -62,12 +62,14 @@ class EDMDiffusionTransportObjective(TransportObjective):
         x: Batch,
         conditioned_target: Batch,
         condition: dict[str, torch.Tensor],
+        target_forcing: Batch | None = None,
     ) -> Batch:
         return self.module.model.model(
             x,
             conditioned_target,
             condition,
             model_comm_group=self.module.model_comm_group,
+            target_forcing=target_forcing,
         )
 
     def compute_loss(
@@ -109,7 +111,7 @@ class EDMDiffusionTransportObjective(TransportObjective):
         source: dict[str, Data],
     ) -> dict[str, Data]:
         """Create the corrupted target by adding scaled source noise to the clean target."""
-        return {name: add_scaled_data(x.data[name], source[name], sigma[name]) for name in x.keys()}
+        return {name: add_scaled_data(x.data[name], source[name], sigma[name]) for name in x.data}
 
     def _sample_training_sigma(
         self,

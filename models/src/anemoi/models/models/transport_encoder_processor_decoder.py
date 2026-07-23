@@ -54,6 +54,13 @@ LOGGER = logging.getLogger(__name__)
 SamplingData = tuple[Batch, ...]
 
 
+def _cat_feature_data(a: Data, b: Data) -> Data:
+    """Concatenate two per-dataset payloads along the variable axis."""
+    if isinstance(a, list):
+        return [torch.cat([a_sample, b_sample.to(a_sample.dtype)], dim=-1) for a_sample, b_sample in zip(a, b)]
+    return torch.cat([a, b.to(a.dtype)], dim=-1)
+
+
 class AnemoiTransportModelEncProcDec(AnemoiModelEncProcDec):
     """Encoder-processor-decoder model conditioned on diffusion noise level or bridge time."""
 
@@ -100,6 +107,15 @@ class AnemoiTransportModelEncProcDec(AnemoiModelEncProcDec):
         output_dim = super()._calculate_output_dim(dataset_name)
         input_dim = base_input_dim + output_dim  # input history plus corrupted target
         return input_dim
+
+    def _calculate_target_dim(self, dataset_name: str) -> int:
+        target_dim = super()._calculate_target_dim(dataset_name)
+        if not self.use_encoder_data_output[dataset_name]:
+            # In addition to the deterministic decoder inputs (output-time
+            # decoding forcings plus coordinates), the transport decoder
+            # consumes the corrupted target values at the target locations.
+            target_dim += super()._calculate_output_dim(dataset_name)
+        return target_dim
 
     def _create_noise_conditioning_mlp(self) -> nn.Sequential:
         mlp = nn.Sequential()
@@ -300,6 +316,7 @@ class AnemoiTransportModelEncProcDec(AnemoiModelEncProcDec):
         condition: dict[str, torch.Tensor],
         model_comm_group: Optional[ProcessGroup] = None,
         grid_shard_sizes: DatasetShardSizes | None = None,
+        target_forcing: Optional[Batch] = None,
         **kwargs,
     ) -> Batch:
         return self.transport_model_objective.forward(
@@ -309,6 +326,7 @@ class AnemoiTransportModelEncProcDec(AnemoiModelEncProcDec):
             condition,
             model_comm_group=model_comm_group,
             grid_shard_sizes=grid_shard_sizes,
+            target_forcing=target_forcing,
             **kwargs,
         )
 
@@ -319,6 +337,7 @@ class AnemoiTransportModelEncProcDec(AnemoiModelEncProcDec):
         condition: dict[str, torch.Tensor],
         model_comm_group: Optional[ProcessGroup] = None,
         grid_shard_sizes: DatasetShardSizes | None = None,
+        target_forcing: Optional[Batch] = None,
         **kwargs,
     ) -> Batch:
         # Multi-dataset case
@@ -433,8 +452,21 @@ class AnemoiTransportModelEncProcDec(AnemoiModelEncProcDec):
         # Decoder
         out_batch = conditioned_target
         for dataset_name in dataset_names:
+            decoder_target_view = conditioned_target[dataset_name]
+            if not self.use_encoder_data_output[dataset_name]:
+                # Match the deterministic decoder: condition the target nodes on
+                # the output-time decoding forcings alongside the corrupted target.
+                if target_forcing is None or dataset_name not in target_forcing:
+                    msg = (
+                        f"Dataset '{dataset_name}' decodes from target-side features; a 'target_forcing' "
+                        "batch with the output-time decoding forcings is required."
+                    )
+                    raise ValueError(msg)
+                decoder_target_view = decoder_target_view.clone(
+                    data=_cat_feature_data(decoder_target_view.data, target_forcing[dataset_name].data),
+                )
             target_coords, target_data_latent, shard_sizes_target, _target_batch_sizes = self._assemble_target(
-                conditioned_target[dataset_name],
+                decoder_target_view,
                 x_data_latent_dict.get(dataset_name, None),
                 batch_size=bse,
                 model_comm_group=model_comm_group,
@@ -797,6 +829,7 @@ class AnemoiTransportModelEncProcDec(AnemoiModelEncProcDec):
         sampler_params: Optional[dict] = None,
         pre_processors_tendencies: Optional[dict[str, nn.Module]] = None,
         post_processors_tendencies: Optional[dict[str, nn.Module]] = None,
+        target_forcing: Optional[Batch] = None,
         **kwargs,
     ) -> dict[str, torch.Tensor]:
         """Run inference by sampling from the selected transport objective.
@@ -828,6 +861,11 @@ class AnemoiTransportModelEncProcDec(AnemoiModelEncProcDec):
             Pre-processing module for tendencies (used by subclasses).
         post_processors_tendencies : Optional[dict[str, nn.Module]]
             Post-processing module for tendencies (used by subclasses).
+        target_forcing : Optional[Batch]
+            Output-time decoding forcings (raw values) at the target locations.
+            Normalized here with the input pre-processors and used to condition
+            the decoder. Required for datasets that decode from target-side
+            features (e.g. observations).
         **kwargs
             Additional sampling parameters.
 
@@ -857,6 +895,15 @@ class AnemoiTransportModelEncProcDec(AnemoiModelEncProcDec):
 
             x = before_sampling_data[0]
 
+            if target_forcing is not None:
+                # Normalize the output-time decoding forcings like the model inputs.
+                for dataset_name in list(target_forcing.keys()):
+                    if dataset_name in pre_processors:
+                        target_forcing = target_forcing.update_source(
+                            dataset_name,
+                            pre_processors[dataset_name](target_forcing[dataset_name], in_place=False),
+                        )
+
             out = self.sample(
                 x,
                 target_template=target_template,
@@ -864,6 +911,7 @@ class AnemoiTransportModelEncProcDec(AnemoiModelEncProcDec):
                 grid_shard_sizes=grid_shard_sizes,
                 schedule_params=schedule_params,
                 sampler_params=sampler_params,
+                target_forcing=target_forcing,
                 **kwargs,
             )
             out = out.with_data(

@@ -86,7 +86,7 @@ class StatePredictionMode(PredictionMode):
         x: Batch,
     ) -> PreparedPredictionTarget:
         del x
-        raw_target, _ = self.module.task.get_targets(batch, data_indices=self.module.data_indices)
+        raw_target, target_forcing = self.module.task.get_targets(batch, data_indices=self.module.data_indices)
         target_full = self.module.preprocess_targets(raw_target)
         target_data_output = self.module.get_data_output_target(target_full)
         model_target = self.module.reduce_data_output_target_to_model_output(target_data_output)
@@ -99,6 +99,8 @@ class StatePredictionMode(PredictionMode):
                 # Build the reference-state source lazily so gaussian and zero
                 # sources never pay for (or crash on) this projection.
                 "transport_reference_source": lambda: self._reference_state_target_space(batch),
+                # Output-time decoding forcings, normalized like the model inputs.
+                "target_forcing": self.module.preprocess_inputs(target_forcing),
             },
         )
 
@@ -255,7 +257,7 @@ class TendencyPredictionMode(PredictionMode):
             msg = "Tendency prediction mode is not implemented for sparse observation datasets."
             raise NotImplementedError(msg)
 
-        raw_state_target, _ = self.module.task.get_targets(batch, data_indices=self.module.data_indices)
+        raw_state_target, target_forcing = self.module.task.get_targets(batch, data_indices=self.module.data_indices)
         state_target = self.module.preprocess_targets(raw_state_target)
         y_data_output = self.module.get_data_output_target(state_target)
 
@@ -292,6 +294,8 @@ class TendencyPredictionMode(PredictionMode):
                     data_indices=self.module.data_indices,
                     n_step_output=self.module.n_step_output,
                 ),
+                # Output-time decoding forcings, normalized like the model inputs.
+                "target_forcing": self.module.preprocess_inputs(target_forcing),
             },
         )
 
@@ -492,8 +496,9 @@ class TransportTraining(BaseTransportTraining):
         x: Batch,
         conditioned_target: Batch,
         condition: dict[str, torch.Tensor],
+        target_forcing: Batch | None = None,
     ) -> Batch:
-        return self.transport_objective.forward(x, conditioned_target, condition)
+        return self.transport_objective.forward(x, conditioned_target, condition, target_forcing=target_forcing)
 
     def _compute_loss(
         self,
@@ -529,6 +534,8 @@ class TransportTraining(BaseTransportTraining):
         task_kwargs = {} if task_kwargs is None else task_kwargs
         x = self.task.get_inputs(batch, data_indices=self.data_indices)
         _, target_template = self.task.get_targets(batch, data_indices=self.data_indices, **task_kwargs)
+        # The template carries the output-time decoding forcings in the same
+        # normalization state as the caller-provided batch (matching x).
         return self.model.model.sample(
             x,
             target_template=target_template,
@@ -536,6 +543,7 @@ class TransportTraining(BaseTransportTraining):
             grid_shard_sizes=self.grid_shard_sizes,
             schedule_params=schedule_params,
             sampler_params=sampler_params,
+            target_forcing=target_template,
             **kwargs,
         )
 
@@ -549,7 +557,12 @@ class TransportTraining(BaseTransportTraining):
         prepared_target = self.prediction_mode.prepare_target(batch, x)
         prepared_objective = self.transport_objective.prepare(prepared_target)
 
-        prediction = self(x, prepared_objective.conditioned_target, prepared_objective.condition)
+        prediction = self(
+            x,
+            prepared_objective.conditioned_target,
+            prepared_objective.condition,
+            target_forcing=prepared_target.aux.get("target_forcing"),
+        )
         loss_prediction = self.transport_objective.prepare_loss_prediction(prediction, prepared_objective)
 
         metric_prediction = None

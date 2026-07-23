@@ -404,8 +404,22 @@ def test_tendency_transport_forward_network_uses_dense_source_view_override() ->
     assert out.data["data"].shape == (1, 1, 1, 3, 2)
 
 
+def test_transport_target_dim_combines_corrupted_target_and_decoding_forcings() -> None:
+    """The obs transport decoder consumes outputs + decoding forcings + coordinates."""
+    model = _transport_model_stub()
+    model.use_encoder_data_output = {"obs": False}
+    model.is_dataset_static = {"obs": False}
+    model.num_output_channels = {"obs": 3}
+    model.num_input_channels_decoding_forcings = {"obs": 12}
+    model.node_attributes = SimpleNamespace(num_trainable_parameters={})
+
+    coords_dim = 4
+    assert model._calculate_target_dim("obs") == 3 + 12 + coords_dim
+
+
 def test_transport_decoder_uses_target_assembly_when_encoder_data_output_is_disabled() -> None:
     model = _transport_model_stub()
+    model.use_encoder_data_output = {"obs": False}
     model._graph_name_hidden = "hidden"
     model.node_attributes = _EmptyNodeAttributes()
     model.latent_skip = False
@@ -422,12 +436,18 @@ def test_transport_decoder_uses_target_assembly_when_encoder_data_output_is_disa
     )
 
     expected_target_data_latent = torch.zeros(3, 4)
-    model._assemble_target = lambda *_args, **_kwargs: (
-        torch.zeros(3, 2),
-        expected_target_data_latent,
-        None,
-        None,
-    )
+    assembled_views = {}
+
+    def _assemble_target_stub(view, *_args, **_kwargs):
+        assembled_views["obs"] = view
+        return (
+            torch.zeros(3, 2),
+            expected_target_data_latent,
+            None,
+            None,
+        )
+
+    model._assemble_target = _assemble_target_stub
     model._assemble_output = lambda _x_out, _x_skip, target, _dtype, _dataset_name: target.clone(
         data=[torch.zeros(3, 1)],
     )
@@ -466,10 +486,20 @@ def test_transport_decoder_uses_target_assembly_when_encoder_data_output_is_disa
         statistics={"obs": {}},
     )
 
-    model._forward_transport_network(batch, batch, {"obs": torch.zeros(1, 1, 1, 1, 1)})
+    target_forcing = batch.with_data({"obs": [torch.full((3, 2), 5.0)]})
+    model._forward_transport_network(
+        batch,
+        batch,
+        {"obs": torch.zeros(1, 1, 1, 1, 1)},
+        target_forcing=target_forcing,
+    )
 
     assert decoder.destination_features is expected_target_data_latent
     assert decoder.destination_features.shape == (3, 4)
+    # The decoder target view combines the corrupted target with the forcings.
+    assembled_data = assembled_views["obs"].data[0]
+    assert assembled_data.shape == (3, 3)
+    torch.testing.assert_close(assembled_data[:, 1:], torch.full((3, 2), 5.0))
 
 
 def test_transport_conditioning_rejects_expanded_condition_shape() -> None:
@@ -1134,8 +1164,9 @@ def test_sample_end_to_end_multi_dataset_real_sampler(
         condition: dict[str, torch.Tensor],
         model_comm_group=None,
         grid_shard_sizes=None,
+        target_forcing=None,
     ) -> Batch:
-        del model_comm_group, grid_shard_sizes
+        del model_comm_group, grid_shard_sizes, target_forcing
         out = {}
         for dataset_name, target_data in conditioned_target.data.items():
             condition_data = condition[dataset_name]

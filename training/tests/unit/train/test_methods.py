@@ -1829,8 +1829,9 @@ def test_transport_validation_returns_conditioned_target_for_plotting(
             x: Batch,
             conditioned_target: Batch,
             condition: dict[str, torch.Tensor],
+            target_forcing: Batch | None = None,
         ) -> Batch:
-            del x, condition
+            del x, condition, target_forcing
             return conditioned_target
 
         def reconstruct_endpoint(
