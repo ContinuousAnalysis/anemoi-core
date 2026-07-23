@@ -395,6 +395,9 @@ class Batch:
         new_shard_sizes = dict(self.shard_sizes)
         new_shard_sizes[source_name] = source_view.shard_sizes
 
+        new_statistics = dict(self.statistics)
+        new_statistics[source_name] = source_view.statistics
+
         return Batch(
             data=new_data,
             coordinates=new_coordinates,
@@ -404,7 +407,7 @@ class Batch:
             shard_sizes=new_shard_sizes,
             layouts=self.layouts,
             variables=new_variables,
-            statistics=self.statistics,
+            statistics=new_statistics,
         )
 
     def select(self, **kwargs) -> "Batch":
