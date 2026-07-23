@@ -655,6 +655,100 @@ def test_stochastic_interpolant_prepare_builds_bridge_and_drift(
     torch.testing.assert_close(reconstructed["data"], clean["data"])
 
 
+def test_stochastic_interpolant_prepare_remasks_missing_observations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Drift loss targets carry NaNs at missing observations while the network input stays clean."""
+    module = SimpleNamespace(
+        model=SimpleNamespace(
+            model=SimpleNamespace(
+                stochastic_interpolant=StochasticInterpolantSettings(
+                    alpha_schedule="linear",
+                    beta_schedule="quadratic",
+                    sigma_schedule="quadratic_bridge",
+                    noise_scale=1.0,
+                ),
+                training_condition={"distribution": "uniform_time"},
+                transport_source=TransportSourceBuilder(
+                    TransportSourceSettings(kind="gaussian", scale=1.0, noise_scale=0.0),
+                ),
+            ),
+        ),
+        _grid_shard_sizes=lambda _source: {"data": None},
+    )
+
+    clean = {"data": torch.full((1, 1, 1, 2, 1), 5.0)}  # imputed, NaN-free
+    missing = {"data": clean["data"].clone()}
+    missing["data"][0, 0, 0, 1, 0] = float("nan")  # the observation was missing
+    prepared = PreparedPredictionTarget(
+        model_target=_DataBatch(clean),
+        loss_target=_DataBatch(clean),
+        loss_target_layout=IndexSpace.MODEL_OUTPUT,
+        metric_target=_DataBatch(clean),
+        aux={"model_target_missing": _DataBatch(missing)},
+    )
+
+    monkeypatch.setattr(
+        torch,
+        "rand",
+        lambda shape, device=None, dtype=None: torch.full(shape, 0.25, device=device, dtype=dtype),
+    )
+    monkeypatch.setattr(
+        torch,
+        "randn",
+        lambda shape, device=None, dtype=None: torch.ones(shape, device=device, dtype=dtype),
+    )
+
+    objective = StochasticInterpolantTransportObjective(module).prepare(prepared)
+
+    loss_target = objective.loss_target["data"]
+    assert torch.isnan(loss_target[0, 0, 0, 1, 0])
+    assert not torch.isnan(loss_target[0, 0, 0, 0, 0])
+    assert not torch.isnan(objective.conditioned_target["data"]).any()
+
+
+class _FakeImputingProcessors:
+    """Processor stub: fills NaNs unless imputation is skipped (loss targets)."""
+
+    def __call__(
+        self,
+        view: SourceView,
+        in_place: bool = False,
+        skip_imputation: bool = False,
+        **_kwargs: Any,
+    ) -> SourceView:
+        del in_place
+        if skip_imputation:
+            return view
+        data = view.data
+        filled = [torch.nan_to_num(t) for t in data] if isinstance(data, list) else torch.nan_to_num(data)
+        return view.clone(data=filled)
+
+
+def test_state_prepare_target_imputes_model_target_and_keeps_loss_nans() -> None:
+    """The corrupted-target path is imputed while loss targets keep their NaNs."""
+    data_indices = _data_indices_single()
+    task = Forecaster(multistep_input=1, multistep_output=1, timestep="6h")
+    forecaster = TransportTraining.__new__(TransportTraining)
+    pl.LightningModule.__init__(forecaster)
+    _wire_training_module(forecaster, data_indices=data_indices, config=_CFG_EMPTY, task=task)
+    forecaster.model = SimpleNamespace(
+        pre_processors={"data": _FakeImputingProcessors()},
+        post_processors={"data": Processors([], inverse=True)},
+    )
+    mode = StatePredictionMode(forecaster)
+
+    data = torch.randn(1, 2, 1, 4, len(_NAME_TO_INDEX))
+    data[0, 1, 0, 2, 0] = float("nan")  # missing observation at the output step
+    batch = _make_gridded_batch(data)
+
+    prepared = mode.prepare_target(batch, x=None)
+
+    assert not torch.isnan(prepared.model_target["data"].data).any()
+    assert torch.isnan(prepared.loss_target["data"].data).any()
+    assert torch.isnan(prepared.aux["model_target_missing"]["data"].data).any()
+
+
 # ── BaseTrainingModule: calculate_val_metrics ──────────────────────────────────
 
 

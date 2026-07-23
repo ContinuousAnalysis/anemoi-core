@@ -18,6 +18,7 @@ from anemoi.models.transport.data_helpers import first_data_device
 from anemoi.models.transport.data_helpers import multiply_batch_scalar_data
 from anemoi.models.transport.data_helpers import randn_like_data
 from anemoi.models.transport.data_helpers import zip_map_batch_scalar_data
+from anemoi.models.transport.data_helpers import zip_map_data
 from anemoi.models.transport.paths import stochastic_interpolant_alpha
 from anemoi.models.transport.paths import stochastic_interpolant_alpha_dot
 from anemoi.models.transport.paths import stochastic_interpolant_beta
@@ -50,6 +51,15 @@ class StochasticInterpolantTransportObjective(TransportObjective):
             source,
             prepared.model_target,
         )
+        # model_target is imputed so it can be fed through the network; re-mask
+        # the drift loss target with NaNs at missing observations so the loss
+        # (with ignore_nans) excludes them instead of fitting imputed values.
+        missing = prepared.aux.get("model_target_missing")
+        if missing is not None:
+            drift_target = {
+                name: zip_map_data(drift, missing.data[name], lambda d, m: d + m * 0)
+                for name, drift in drift_target.items()
+            }
         return PreparedTransportObjective(
             conditioned_target=prepared.model_target.with_data(interpolant_state),
             condition=time_level,

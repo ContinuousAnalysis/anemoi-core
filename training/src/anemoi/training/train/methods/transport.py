@@ -87,9 +87,22 @@ class StatePredictionMode(PredictionMode):
     ) -> PreparedPredictionTarget:
         del x
         raw_target, target_forcing = self.module.task.get_targets(batch, data_indices=self.module.data_indices)
+        # Loss and metric targets keep their NaNs so missing observations are
+        # masked in the loss (imputation skipped).
         target_full = self.module.preprocess_targets(raw_target)
-        target_data_output = self.module.get_data_output_target(target_full)
-        model_target = self.module.reduce_data_output_target_to_model_output(target_data_output)
+        # The model target is corrupted and fed through the network, so it must
+        # be imputed like the model inputs: NaNs would spread through message
+        # passing and poison the whole prediction.
+        model_state = self.module.preprocess_inputs(raw_target)
+        model_target = self.module.reduce_data_output_target_to_model_output(
+            self.module.get_data_output_target(model_state),
+        )
+        # NaN-preserving counterpart of model_target, used by objectives that
+        # derive their loss target from model_target (e.g. the SI drift) to
+        # re-mask missing observations.
+        model_target_missing = self.module.reduce_data_output_target_to_model_output(
+            self.module.get_data_output_target(target_full),
+        )
         return PreparedPredictionTarget(
             model_target=model_target,
             loss_target=target_full,
@@ -101,6 +114,7 @@ class StatePredictionMode(PredictionMode):
                 "transport_reference_source": lambda: self._reference_state_target_space(batch),
                 # Output-time decoding forcings, normalized like the model inputs.
                 "target_forcing": self.module.preprocess_inputs(target_forcing),
+                "model_target_missing": model_target_missing,
             },
         )
 
@@ -258,7 +272,11 @@ class TendencyPredictionMode(PredictionMode):
             raise NotImplementedError(msg)
 
         raw_state_target, target_forcing = self.module.task.get_targets(batch, data_indices=self.module.data_indices)
-        state_target = self.module.preprocess_targets(raw_state_target)
+        # Tendency targets are fed through the network (as the corrupted target)
+        # and converted back to states for metrics, so they are imputed like the
+        # model inputs; prepare_metric_target re-inserts the missing values via
+        # the imputer inverse.
+        state_target = self.module.preprocess_inputs(raw_state_target)
         y_data_output = self.module.get_data_output_target(state_target)
 
         pre_processors_tendencies = getattr(self.module.model, "pre_processors_tendencies", None)
