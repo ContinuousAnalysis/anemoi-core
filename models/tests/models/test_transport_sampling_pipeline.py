@@ -426,6 +426,7 @@ def test_transport_decoder_uses_target_assembly_when_encoder_data_output_is_disa
         torch.zeros(3, 2),
         expected_target_data_latent,
         None,
+        None,
     )
     model._assemble_output = lambda _x_out, _x_skip, target, _dtype, _dataset_name: target.clone(
         data=[torch.zeros(3, 1)],

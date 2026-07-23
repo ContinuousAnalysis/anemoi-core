@@ -98,8 +98,8 @@ class DummyModel:
 
     def __init__(self, num_output_variables: int | None = None, output_times: int = 1) -> None:
         self.called_with: dict[str, Any] | None = None
-        self.pre_processors = Processors([])
-        self.post_processors = Processors([], inverse=True)
+        self.pre_processors = {"data": Processors([])}
+        self.post_processors = {"data": Processors([], inverse=True)}
         self.output_times = output_times
         self.num_output_variables = num_output_variables
         self.metrics: dict = {}
@@ -626,7 +626,7 @@ def test_stochastic_interpolant_prepare_builds_bridge_and_drift(
 def test_calculate_val_metrics_forwards_standard_metric_kwargs() -> None:
     """calculate_val_metrics passes scaler_indices, grid_shard_slice, group to each metric."""
     module = MagicMock(spec=BaseTrainingModule)
-    module._align_view_to_layout = lambda view, *_args, **_kwargs: view
+    module._postprocess_dataset_view = lambda view, *_args, **_kwargs: view
     metric = CaptureLoss()
     post_processor = MagicMock(side_effect=lambda x, **_: x)
     group = object()
@@ -1068,6 +1068,8 @@ def test_edm_transport_training_step_with_forecaster() -> None:
 
         def __init__(self, inner: DummyTransportModel) -> None:
             self.model = inner
+            self.pre_processors = {"data": Processors([])}
+            self.post_processors = {"data": Processors([], inverse=True)}
 
     data_indices = _data_indices_single()
     task = Forecaster(multistep_input=1, multistep_output=1, timestep="6h")
@@ -1597,6 +1599,8 @@ def test_edm_transport_training_uses_data_full_target_layout(
     class _DummyTransportWrapper:
         def __init__(self, inner: DummyTransportModel) -> None:
             self.model = inner
+            self.pre_processors = {"data": Processors([])}
+            self.post_processors = {"data": Processors([], inverse=True)}
 
     # Include an extra target (observation) variable to exercise the target-variable path.
     name_to_index = {"A": 0, "B": 1, "obs_A": 2}
@@ -1701,6 +1705,8 @@ def test_stochastic_interpolant_training_uses_model_output_target_layout(
     class _DummyTransportWrapper:
         def __init__(self, inner: DummyTransportModel) -> None:
             self.model = inner
+            self.pre_processors = {"data": Processors([])}
+            self.post_processors = {"data": Processors([], inverse=True)}
 
     name_to_index = {"A": 0, "B": 1, "obs_A": 2}
     data_indices = {"data": _make_minimal_index_collection(name_to_index, target=["obs_A"])}
@@ -1813,6 +1819,10 @@ def test_transport_validation_returns_conditioned_target_for_plotting(
     forecaster = TransportTraining.__new__(TransportTraining)
     pl.LightningModule.__init__(forecaster)
     _wire_training_module(forecaster, data_indices=data_indices, config=_CFG_EMPTY, task=task)
+    forecaster.model = SimpleNamespace(
+        pre_processors={"data": Processors([])},
+        post_processors={"data": Processors([], inverse=True)},
+    )
     objective = _DummyTransportObjective()
     forecaster._prediction_mode = StatePredictionMode(forecaster)
     forecaster._transport_objective = objective
@@ -1858,6 +1868,8 @@ def test_stochastic_interpolant_tendency_training_step_uses_model_output_drift_t
     class _DummyTransportWrapper:
         def __init__(self, inner: DummyTransportModel) -> None:
             self.model = inner
+            self.pre_processors = {"data": Processors([])}
+            self.post_processors = {"data": Processors([], inverse=True)}
 
     data_indices = _data_indices_single()
     task = Forecaster(multistep_input=1, multistep_output=1, timestep="6h")

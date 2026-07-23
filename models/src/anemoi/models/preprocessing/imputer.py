@@ -29,6 +29,8 @@ class BaseImputer(BasePreprocessor, ABC):
     no-op — loss masking is handled externally from the target dataset.
     """
 
+    supports_skip_imputation = True
+
     def __init__(self, config=None, **kwargs) -> None:
         """Initialize the imputer.
 
@@ -52,6 +54,7 @@ class BaseImputer(BasePreprocessor, ABC):
         x: torch.Tensor,
         statistics: Optional[dict[str, np.ndarray]] = None,
         name_to_index: Optional[dict[str, int]] = None,
+        skip_imputation: bool = False,
         **_kwargs,
     ) -> torch.Tensor:
         """Impute missing values in the input tensor.
@@ -64,14 +67,21 @@ class BaseImputer(BasePreprocessor, ABC):
             Statistics dictionary required for normalization.
         name_to_index : dict[str, int]
             Dictionary mapping variable names to their indices, required for normalization.
+        skip_imputation : bool, optional
+            Return the input unchanged instead of filling missing values.
 
         Returns
         -------
         torch.Tensor
             View with NaNs replaced by configured values.
         """
-        replacements = self.get_imputing_replacements(name_to_index, statistics)
+        if skip_imputation:
+            return x
 
+        replacements = self.get_imputing_replacements(
+            name_to_index=name_to_index,
+            statistics=statistics,
+        )
         x = self.impute(x, replacements=replacements)
 
         return x

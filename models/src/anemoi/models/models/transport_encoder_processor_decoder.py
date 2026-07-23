@@ -433,7 +433,7 @@ class AnemoiTransportModelEncProcDec(AnemoiModelEncProcDec):
         # Decoder
         out_batch = conditioned_target
         for dataset_name in dataset_names:
-            target_coords, target_data_latent, shard_sizes_target = self._assemble_target(
+            target_coords, target_data_latent, shard_sizes_target, _target_batch_sizes = self._assemble_target(
                 conditioned_target[dataset_name],
                 x_data_latent_dict.get(dataset_name, None),
                 batch_size=bse,
@@ -480,7 +480,7 @@ class AnemoiTransportModelEncProcDec(AnemoiModelEncProcDec):
                 target_data.dtype,
                 dataset_name,
             )
-            out_batch = out_batch._update_source(dataset_name, out_view)
+            out_batch = out_batch.update_source(dataset_name, out_view)
 
         return out_batch
 
@@ -964,12 +964,7 @@ class AnemoiTransportTendModelEncProcDec(AnemoiTransportModelEncProcDec):
         dataset_name: str,
         x: torch.Tensor,
     ) -> torch.Tensor:
-        processors = post_processors[dataset_name]
-        if not hasattr(processors, "processors"):
-            return x
-        for processor in processors.processors.values():
-            if getattr(processor, "supports_skip_imputation", False):
-                x = processor(x, in_place=False, inverse=True, skip_imputation=False)
+        del post_processors, dataset_name
         return x
 
     def _assemble_input(

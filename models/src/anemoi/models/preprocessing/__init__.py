@@ -121,7 +121,13 @@ class BasePreprocessor(nn.Module, ABC):
         """Inverse transform the input tensor."""
         raise NotImplementedError
 
-    def forward(self, x: SourceView, in_place: bool = True, inverse: bool = False, **kwargs) -> SourceView:
+    def forward(
+        self,
+        x: SourceView,
+        in_place: bool = True,
+        inverse: bool = False,
+        **kwargs,
+    ) -> SourceView:
         """Process the input tensor.
 
         Parameters
@@ -163,7 +169,7 @@ class Processors(nn.Module):
         super().__init__()
 
         self.inverse = inverse
-        self.first_run = True
+        # self.first_run = True
 
         if inverse:
             # Reverse the order of processors for inverse transformation
@@ -193,6 +199,8 @@ class Processors(nn.Module):
             Processed tensor
         """
         for processor in self.processors.values():
+            if self.inverse and getattr(processor, "supports_skip_imputation", False):
+                continue
             x = processor(x, in_place=in_place, inverse=self.inverse, **kwargs)
 
         return x

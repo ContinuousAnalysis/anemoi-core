@@ -363,7 +363,7 @@ class Batch:
             statistics={name: self.statistics[name] for name in new_data_keys if name in self.statistics},
         )
 
-    def _update_source(self, source_name: str, source_view: SourceView) -> "Batch":
+    def update_source(self, source_name: str, source_view: SourceView) -> "Batch":
         """Return a new batch with one dataset replaced from a ``SourceView``."""
         new_data = {**self.data, source_name: source_view.data}
 
@@ -419,7 +419,7 @@ class Batch:
         batch = self
         for source_name, per_source_idx in per_source_indices.items():
             selected_source = batch[source_name].select(**per_source_idx)
-            batch = batch._update_source(source_name, selected_source)
+            batch = batch.update_source(source_name, selected_source)
 
         return batch
 
@@ -637,6 +637,6 @@ class Batch:
         for dataset in self.dataset_names:
             view = self[dataset]
             gathered_view = view.allgather(group=group)
-            batch = batch._update_source(dataset, gathered_view)
+            batch = batch.update_source(dataset, gathered_view)
 
         return batch

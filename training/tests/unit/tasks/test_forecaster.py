@@ -264,13 +264,12 @@ def test_rollout_advance_input_keeps_latest_steps(
         ],
         dim=1,
     )
-    batch = torch.zeros((b, n_step_input + n_step_output, e, g, v), dtype=torch.float32)
+    output_values = torch.zeros((b, n_step_output, e, g, v), dtype=torch.float32)
 
     updated = task._advance_dataset_input(
         x,
         y_pred,
-        batch,
-        rollout_step=0,
+        output_values,
         output_mask=NoOutputMask(),
         data_indices=data_indices,
     )
@@ -293,23 +292,22 @@ def test_rollout_advance_input_reapplies_boundary_truth_and_refreshes_forcing() 
     # tensor dims: (batch, time, ens, grid, variable)
     x = torch.zeros((1, 2, 1, 2, 2), dtype=torch.float32)
     y_pred = torch.tensor([[[[[10.0], [20.0]]]]], dtype=torch.float32)
-    batch = torch.zeros((1, 3, 1, 2, 2), dtype=torch.float32)
-    batch[:, 2, 0, :, 0] = torch.tensor([100.0, 200.0])
-    batch[:, 2, 0, :, 1] = torch.tensor([1000.0, 2000.0])
+    output_values = torch.zeros((1, 1, 1, 2, 2), dtype=torch.float32)
+    output_values[:, 0, 0, :, 0] = torch.tensor([100.0, 200.0])
+    output_values[:, 0, 0, :, 1] = torch.tensor([1000.0, 2000.0])
 
     updated = task._advance_dataset_input(
         x,
         y_pred,
-        batch,
-        rollout_step=0,
+        output_values,
         data_indices=data_indices,
         output_mask=output_mask,
     )
 
     # prognostic variable, 1st grid point (cutout_mask=True) should be from y_pred,
-    # 2nd grid point (cutout_mask=False) should be from batch
+    # 2nd grid point (cutout_mask=False) should be from the output-time truth
     torch.testing.assert_close(updated[0, -1, 0, :, 0], torch.tensor([10.0, 200.0]))
-    # forcing variable should be refreshed from batch for both grid points
+    # forcing variable should be refreshed from the output-time values for both grid points
     torch.testing.assert_close(updated[0, -1, 0, :, 1], torch.tensor([1000.0, 2000.0]))
 
 
@@ -327,7 +325,7 @@ def test_advance_input_preserves_sparse_batch_data_payload() -> None:
         statistics={"obs": {}},
     )
 
-    advanced = task.advance_input(batch, y_pred=batch, batch=batch, data_indices={})
+    advanced = task.advance_input(batch, y_pred=batch, output_values=batch, data_indices={})
 
     assert isinstance(advanced.data["obs"], list)
     assert not isinstance(advanced.data["obs"], SourceView)
