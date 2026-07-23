@@ -815,6 +815,61 @@ def test_state_model_target_and_missing_stay_consistent_with_real_processors() -
     torch.testing.assert_close(prepared.loss_target["data"].data, missing, equal_nan=True)
 
 
+def test_state_model_target_and_missing_stay_consistent_for_sparse_obs() -> None:
+    """Same consistency contract on the sparse/tabular (observation) view path."""
+    data_indices = _data_indices_single()
+    task = Forecaster(multistep_input=1, multistep_output=1, timestep="6h")
+    forecaster = TransportTraining.__new__(TransportTraining)
+    pl.LightningModule.__init__(forecaster)
+    _wire_training_module(forecaster, data_indices=data_indices, config=_CFG_EMPTY, task=task)
+    processors = Processors(
+        [
+            ("imputer", InputImputer(config=DictConfig({"default": "mean"}))),
+            ("normalizer", InputNormalizer(config=DictConfig({"default": "mean-std"}))),
+        ],
+    )
+    forecaster.model = SimpleNamespace(
+        pre_processors={"data": processors},
+        post_processors={"data": Processors([], inverse=True)},
+    )
+    mode = StatePredictionMode(forecaster)
+
+    statistics = {
+        "mean": torch.tensor([1.0, 2.0]),
+        "stdev": torch.tensor([2.0, 4.0]),
+        "minimum": torch.tensor([-10.0, -10.0]),
+        "maximum": torch.tensor([10.0, 10.0]),
+    }
+    layout = TensorLayout(grid=0, variables=1, time_in_grid=True)
+    data = [torch.randn(5, len(_NAME_TO_INDEX))]
+    data[0][3, 0] = float("nan")  # missing observation at the output step
+    batch = Batch(
+        data={"data": data},
+        coordinates={"data": [torch.zeros(5, 2)]},
+        metadata={"data": {"boundaries": [(slice(0, 2), slice(2, 5))]}},
+        layouts={"data": layout},
+        variables={"data": list(_NAME_TO_INDEX)},
+        statistics={"data": statistics},
+    )
+
+    prepared = mode.prepare_target(batch, x=None)
+
+    model_target = prepared.model_target["data"].data[0]
+    missing = prepared.aux["model_target_missing"]["data"].data[0]
+    assert model_target.shape == missing.shape == (3, len(_NAME_TO_INDEX))
+
+    # NaNs sit exactly where the raw output-step rows had missing values.
+    raw_output_rows = data[0][2:5]
+    assert torch.equal(torch.isnan(missing), torch.isnan(raw_output_rows))
+    assert not torch.isnan(model_target).any()
+
+    # Identical normalization at observed positions; normalized fill elsewhere.
+    observed = ~torch.isnan(missing)
+    torch.testing.assert_close(model_target[observed], missing[observed])
+    torch.testing.assert_close(model_target[~observed], torch.zeros_like(model_target[~observed]))
+    torch.testing.assert_close(prepared.loss_target["data"].data[0], missing, equal_nan=True)
+
+
 # ── BaseTrainingModule: calculate_val_metrics ──────────────────────────────────
 
 
