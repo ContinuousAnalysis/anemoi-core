@@ -1,4 +1,4 @@
-# (C) Copyright 2024-2025 ECMWF.
+# (C) Copyright 2024-2026 Anemoi contributors.
 #
 # This software is licensed under the terms of the Apache Licence Version 2.0
 # which can be obtained at http://www.apache.org/licenses/LICENSE-2.0.
@@ -234,6 +234,17 @@ class ReweightedGraphNodeAttributeScalerSchema(BaseModel):
     "Normalisation method applied to the node attribute."
 
 
+class SpectralDimensionScalerSchema(BaseModel):
+    target_: Literal["anemoi.training.losses.scalers.SpectralDimensionScaler"] = Field(..., alias="_target_")
+    n_spectral_modes: PositiveInt = Field(example=193)
+    "Number of total wavenumbers (L dimension). For SHT-based losses this is ``truncation + 1``."
+    spectral_dims: PositiveInt | None = Field(default=None, example=193)
+    "Length of the spectral dimension as seen by the loss. Defaults to ``n_spectral_modes``. "
+    "Set explicitly for losses that keep the full (L, M) dimension flattened."
+    norm: Literal["unit-sum", "unit-mean", "l1"] | None = Field(default=None, example=None)
+    "Normalisation method applied to the scaler values."
+
+
 ScalerSchema = (
     GeneralVariableLossScalerSchema
     | VariableLevelScalerSchema
@@ -245,6 +256,7 @@ ScalerSchema = (
     | UniformTimeStepScalerSchema
     | LeadTimeDecayScalerSchema
     | ReweightedGraphNodeAttributeScalerSchema
+    | SpectralDimensionScalerSchema
 )
 
 
@@ -260,7 +272,7 @@ class ImplementedLossesUsingBaseLossSchema(StrEnum):
     lsd = "anemoi.training.losses.LogSpectralDistance"
     logfft2d = "anemoi.training.losses.LogFFT2Distance"
     spectral_crps = "anemoi.training.losses.SpectralCRPSLoss"
-    spectral_l2 = "anemoi.training.losses.SpectralL2Loss"
+    power_spectrum = "anemoi.training.losses.PowerSpectrumLoss"
     spectral_amse = "anemoi.training.losses.SpectralAMSELoss"
 
 
@@ -360,11 +372,42 @@ class MultiscaleConfigOnTheFlySchema(BaseModel):
         return self
 
 
+class TimeAggregateLossWrapperSchema(BaseModel):
+    """Schema for TimeAggregateLossWrapper used inside CombinedLoss."""
+
+    target_: Literal["anemoi.training.losses.aggregate.TimeAggregateLossWrapper"] = Field(..., alias="_target_")
+    time_aggregation_types: list[Literal["diff", "mean", "min", "max"]] = Field(min_length=1)
+    "Time aggregation operations to apply over the time dimension before computing the loss."
+    loss_fn: BaseLossSchema | CRPSSchema
+    "Inner loss function applied to each time-aggregated output."
+    scalers: list[str] | None = None
+    "Scalers to apply to the wrapped loss (delegated to inner loss_fn)."
+
+    @field_validator("loss_fn", mode="before")
+    @classmethod
+    def add_empty_scalers_to_inner(cls, v: Any) -> Any:
+        """Inject empty scalers for inner loss if missing; scalers flow through the wrapper.
+
+        This is needed to avoid validation errors on the inner loss when scalers are only defined at the wrapper level.
+        """
+        if isinstance(v, dict) and "scalers" not in v:
+            v["scalers"] = []
+        else:
+            from omegaconf import DictConfig
+            from omegaconf.omegaconf import open_dict
+
+            if isinstance(v, DictConfig) and "scalers" not in v:
+                with open_dict(v):
+                    v["scalers"] = []
+        return v
+
+
 class MultiScaleLossSchema(BaseModel):
     target_: Literal["anemoi.training.losses.MultiscaleLossWrapper"] = Field(..., alias="_target_")
-    per_scale_loss: CRPSSchema | BaseLossSchema
+    per_scale_loss: CRPSSchema | TimeAggregateLossWrapperSchema | BaseLossSchema
     weights: list[float]
     multiscale_config: MultiscaleConfigDiskSchema | MultiscaleConfigOnTheFlySchema | None = None
+    sparse_projector_num_chunks: PositiveInt = 1
     # Deprecated: pass inside multiscale_config instead.
     loss_matrices_path: str | None = None
     loss_matrices: list[str | None] | None = None
@@ -401,39 +444,67 @@ class MultiScaleLossSchema(BaseModel):
         return self
 
 
-class TimeAggregateLossWrapperSchema(BaseModel):
-    """Schema for TimeAggregateLossWrapper used inside CombinedLoss."""
-
-    target_: Literal["anemoi.training.losses.aggregate.TimeAggregateLossWrapper"] = Field(..., alias="_target_")
-    time_aggregation_types: list[Literal["diff", "mean", "min", "max"]] = Field(min_length=1)
-    "Time aggregation operations to apply over the time dimension before computing the loss."
-    loss_fn: BaseLossSchema | CRPSSchema
-    "Inner loss function applied to each time-aggregated output."
-    scalers: list[str] | None = None
-    "Scalers to apply to the wrapped loss (delegated to inner loss_fn)."
-
-    @field_validator("loss_fn", mode="before")
-    @classmethod
-    def add_empty_scalers_to_inner(cls, v: Any) -> Any:
-        """Inject empty scalers for inner loss if missing; scalers flow through the wrapper.
-
-        This is needed to avoid validation errors on the inner loss when scalers are only defined at the wrapper level.
-        """
-        if isinstance(v, dict) and "scalers" not in v:
-            v["scalers"] = []
-        else:
-            from omegaconf import DictConfig
-            from omegaconf.omegaconf import open_dict
-
-            if isinstance(v, DictConfig) and "scalers" not in v:
-                with open_dict(v):
-                    v["scalers"] = []
-        return v
-
-
 class HuberLossSchema(BaseLossSchema):
     delta: float = 1.0
     "Threshold for Huber loss."
+
+
+class SpectralProjectionConfigSchema(BaseModel):
+    """Configuration for sparse projection applied before the spectral transform.
+
+    Exactly one mode must be configured:
+
+    - **File mode**: provide ``matrix_path``.
+    - **Edge mode**: provide ``edges_name``.
+    - **Target-grid mode**: provide ``num_nearest_neighbours`` and ``sigma``
+      together with either ``grid`` or ``node_builder``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    # --- file mode ---
+    matrix_path: str | None = None
+
+    # --- edge mode ---
+    edges_name: tuple[str, str, str] | None = None
+
+    # --- target-grid mode ---
+    num_nearest_neighbours: int | None = None
+    sigma: float | None = None
+    grid: str | None = None
+    node_builder: dict | None = None
+    target_node_name: str = "target_grid"
+
+    # --- shared (edge and target-grid modes) ---
+    edge_weight_attribute: str | None = None
+    src_node_weight_attribute: str | None = None
+    row_normalize: bool = False
+
+    @model_validator(mode="after")
+    def check_mode(self) -> Self:
+        has_matrix = self.matrix_path is not None
+        has_edges = self.edges_name is not None
+        has_target_grid = self.num_nearest_neighbours is not None
+
+        if has_matrix and has_edges:
+            msg = "projection_config: 'matrix_path' and 'edges_name' are mutually exclusive"
+            raise ValueError(msg)
+        if has_matrix and has_target_grid:
+            msg = "projection_config: 'matrix_path' and target-grid keys are mutually exclusive"
+            raise ValueError(msg)
+        if has_edges and has_target_grid:
+            msg = "projection_config: 'edges_name' and target-grid keys are mutually exclusive"
+            raise ValueError(msg)
+        if not (has_matrix or has_edges or has_target_grid):
+            msg = "projection_config must specify 'matrix_path', 'edges_name', or target-grid keys"
+            raise ValueError(msg)
+        if has_target_grid and self.sigma is None:
+            msg = "projection_config: target-grid mode requires 'sigma'"
+            raise ValueError(msg)
+        if has_target_grid and self.grid is None and self.node_builder is None:
+            msg = "projection_config: target-grid mode requires 'grid' or 'node_builder'"
+            raise ValueError(msg)
+        return self
 
 
 class SpectralLossSchema(BaseLossSchema):
@@ -441,6 +512,20 @@ class SpectralLossSchema(BaseLossSchema):
 
     transform: Literal["fft2d", "dct2d", "reduced_sht", "octahedral_sht"] = Field(..., example="fft2d")
     """Type of spectral transform to use."""
+    subgrid: tuple[int, int | None] | str | None = None
+    """Optional slice or string to select a subgrid before the transform."""
+    projection_config: SpectralProjectionConfigSchema | None = None
+    """Optional sparse projection applied to the data before the spectral transform."""
+
+    @model_validator(mode="after")
+    def check_subgrid_transform(self) -> Self:
+        if self.subgrid is not None and self.transform in ("reduced_sht", "octahedral_sht"):
+            msg = (
+                f"subgrid is not supported for the '{self.transform}' transform: "
+                "spherical harmonic transforms require the full grid"
+            )
+            raise ValueError(msg)
+        return self
 
     class Config(BaseModel.Config):
         """Override to allow extra parameters for spectral transforms."""
@@ -461,7 +546,7 @@ def _loss_discriminator(v: Any) -> str:
         "anemoi.training.losses.LogSpectralDistance",
         "anemoi.training.losses.LogFFT2Distance",
         "anemoi.training.losses.SpectralCRPSLoss",
-        "anemoi.training.losses.SpectralL2Loss",
+        "anemoi.training.losses.PowerSpectrumLoss",
         "anemoi.training.losses.SpectralAMSELoss",
     }:
         return "spectral"
@@ -565,6 +650,8 @@ class BaseDDPStrategySchema(BaseModel):
     "Number of GPUs per model."
     read_group_size: PositiveInt = Field(example=1)
     "Number of GPUs per reader group. Defaults to number of GPUs."
+    use_local_synchronization: bool = Field(default=True, example=True)
+    "Use synchronization local to the group when creating process groups."
 
 
 class DDPEnsGroupStrategyStrategySchema(BaseDDPStrategySchema):
@@ -641,8 +728,6 @@ class BaseTrainingSchema(BaseModel):
     "Maximum number of steps, stops earlier if max_epochs is reached first."
     optimization: OptimizationSchema
     "Optimizer and LR scheduler configuration."
-    recompile_limit: PositiveInt = 32
-    "How many times torch.compile will recompile a function for a given input shape."
     metrics: DatasetDict[list[str]]
     "List of metrics"
     ensemble_size_per_device: PositiveInt = 1
