@@ -1,4 +1,4 @@
-# (C) Copyright 2024 Anemoi contributors.
+# (C) Copyright 2024-2026 Anemoi contributors.
 #
 # This software is licensed under the terms of the Apache Licence Version 2.0
 # which can be obtained at http://www.apache.org/licenses/LICENSE-2.0.
@@ -227,6 +227,8 @@ class BaseTrainingModule(pl.LightningModule, ABC):
 
         dataset_variable_groups = get_multiple_datasets_config(self.config.training.variable_groups)
         loss_configs = get_multiple_datasets_config(config.training.training_loss)
+        self._resolve_subgrid(loss_configs)
+
         scalers_configs = get_multiple_datasets_config(config.training.scalers)
         val_metrics_configs = get_multiple_datasets_config(config.training.validation_metrics)
         metrics_to_log = get_multiple_datasets_config(config.training.metrics)
@@ -648,9 +650,12 @@ class BaseTrainingModule(pl.LightningModule, ABC):
         if target_layout is not None:
             loss_kwargs["target_layout"] = target_layout
         if getattr(loss, "needs_shard_layout_info", False):
+            # grid_shard_sizes must stay consistent with grid_shard_slice: if the tensors were
+            # gathered to the full grid (grid_shard_slice is None), the loss must be told it is
+            # not sharded, otherwise it would re-shard an already-full tensor. See _prepare_tensors_for_loss.
             loss_kwargs.update(
                 grid_dim=self.grid_dim,
-                grid_shard_sizes=self.grid_shard_sizes[dataset_name],
+                grid_shard_sizes=self.grid_shard_sizes[dataset_name] if grid_shard_slice is not None else None,
             )
 
         return loss(y_pred, y, **loss_kwargs)
@@ -792,8 +797,7 @@ class BaseTrainingModule(pl.LightningModule, ABC):
             )
 
             if dataset_loss is not None:
-                dataset_loss_sum = dataset_loss.sum()  # collapse potential multi-scale loss
-                total_loss = dataset_loss_sum if total_loss is None else total_loss + dataset_loss_sum
+                total_loss = dataset_loss if total_loss is None else total_loss + dataset_loss
 
                 if validation_mode:
                     loss_obj = self.loss[dataset_name]
@@ -1003,11 +1007,14 @@ class BaseTrainingModule(pl.LightningModule, ABC):
                     )
                     raise ValueError(exception_msg)
 
+                scaler_index = torch.as_tensor(indices, device=y_pred_postprocessed.device, dtype=torch.long)
                 metric_kwargs = {
-                    "scaler_indices": (..., indices),
+                    "scaler_indices": (..., scaler_index),
                     "grid_shard_slice": grid_shard_slice,
                     "group": self.model_comm_group,
                 }
+                # tensor 'scaler_indices[1]' size mismatch at index 0. expected 13, actual 1"
+                torch._dynamo.mark_dynamic(metric_kwargs["scaler_indices"][-1], 0)
                 if pred_layout is not None:
                     metric_kwargs["pred_layout"] = pred_layout
                 if target_layout is not None:
@@ -1015,12 +1022,19 @@ class BaseTrainingModule(pl.LightningModule, ABC):
                 if without_scalers is not None:
                     metric_kwargs["without_scalers"] = without_scalers
                 if getattr(metric, "needs_shard_layout_info", False):
+                    # grid_shard_sizes must stay consistent with grid_shard_slice: if the tensors
+                    # were gathered to the full grid (grid_shard_slice is None), the metric must be
+                    # told it is not sharded, otherwise it would re-shard an already-full tensor.
                     metric_kwargs.update(
                         grid_dim=self.grid_dim,
-                        grid_shard_sizes=self.grid_shard_sizes[dataset_name],
+                        grid_shard_sizes=self.grid_shard_sizes[dataset_name] if grid_shard_slice is not None else None,
                     )
 
-                metrics[metric_step_name] = metric(y_pred_postprocessed, y_postprocessed, **metric_kwargs)
+                metric_value = metric(y_pred_postprocessed, y_postprocessed, **metric_kwargs)
+                # Detach and clone the metric value to avoid in-place modifications affecting the original tensor
+                # This was impacting cuda graphs
+                # TODO(cathal): double check now that everything compiles
+                metrics[metric_step_name] = metric_value.detach().clone()
 
         return metrics
 
@@ -1031,7 +1045,7 @@ class BaseTrainingModule(pl.LightningModule, ABC):
         batch_size = next(iter(batch.values())).shape[0]
 
         step_output = self._step(batch)
-        train_loss = step_output.loss.sum()
+        train_loss = step_output.loss
 
         self.log(
             "train_" + self._get_loss_name() + "_loss",
@@ -1071,9 +1085,8 @@ class BaseTrainingModule(pl.LightningModule, ABC):
 
         with torch.no_grad():
             step_output = self._step(batch, validation_mode=True)
-        val_loss_scales = step_output.loss
+        val_loss = step_output.loss
         metrics = step_output.metrics
-        val_loss = val_loss_scales.sum()
 
         self.log(
             "val_" + self._get_loss_name() + "_loss",
@@ -1086,38 +1099,17 @@ class BaseTrainingModule(pl.LightningModule, ABC):
             sync_dist=True,
         )
 
-        if val_loss_scales.numel() > 1:
-            loss_name = self._get_loss_name()
-            if len(self.loss) == 1:
-                loss_obj = next(iter(self.loss.values()))
-                loss_name = getattr(loss_obj, "name", loss_obj.__class__.__name__.lower())
-            for scale in range(val_loss_scales.numel()):
-                self.log(
-                    "val_" + loss_name + "_loss" + "_scale_" + str(scale),
-                    val_loss_scales[scale],
-                    on_epoch=True,
-                    on_step=True,
-                    prog_bar=False,
-                    logger=self.logger_enabled,
-                    batch_size=batch_size,
-                    sync_dist=True,
-                )
-
         for mname, mvalue in metrics.items():
-            for scale in range(mvalue.numel()):
-
-                log_val = mvalue[scale] if mvalue.numel() > 1 else mvalue
-
-                self.log(
-                    "val_" + mname + "_scale_" + str(scale),
-                    log_val,
-                    on_epoch=True,
-                    on_step=False,
-                    prog_bar=False,
-                    logger=self.logger_enabled,
-                    batch_size=batch_size,
-                    sync_dist=True,
-                )
+            self.log(
+                "val_" + mname,
+                mvalue,
+                on_epoch=True,
+                on_step=False,
+                prog_bar=False,
+                logger=self.logger_enabled,
+                batch_size=batch_size,
+                sync_dist=True,
+            )
 
         return step_output
 
@@ -1174,3 +1166,15 @@ class BaseTrainingModule(pl.LightningModule, ABC):
             hyper_params = OmegaConf.to_container(self.config, resolve=True)
             hyper_params.update({"variable_loss_scaling": self._scaling_values_log})
             self.logger.log_hyperparams(hyper_params)
+
+    def _resolve_subgrid(self, config: dict) -> None:
+        def per_dataset_resolve(per_dataset_config: dict, dataset_name: str) -> None:
+            for k, v in per_dataset_config.items():
+                if isinstance(v, dict):
+                    per_dataset_resolve(v, dataset_name)
+                elif (k, v) == ("subgrid", "output_mask"):
+                    per_dataset_config[k] = self.output_mask[dataset_name].as_tuple()
+
+        for dataset_name, dataset_config in config.items():
+            if dataset_config is not None:
+                per_dataset_resolve(dataset_config, dataset_name)
