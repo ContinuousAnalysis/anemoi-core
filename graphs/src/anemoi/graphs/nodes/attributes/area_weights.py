@@ -166,10 +166,7 @@ class PlanarAreaWeights(BaseAreaWeights):
         SciPy returns each 2-D region's vertices in boundary order, so for a convex cell
         this matches ``ConvexHull(...).volume`` to float-rounding level. A region whose
         stored vertex order is not convex would make shoelace under-count, so those are
-        detected and recomputed exactly with ``ConvexHull``. Under the merged-facet qhull
-        options used by :meth:`compute_area_weights` this guard is not expected to fire
-        (it does not on N320 or on 1.7M-node stretched grids); it is kept as a cheap
-        safety net against near-collinear cell vertices.
+        detected and recomputed exactly with ``ConvexHull``.
 
         Parameters
         ----------
