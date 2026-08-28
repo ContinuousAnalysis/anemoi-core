@@ -22,7 +22,7 @@ from omegaconf import DictConfig
 from omegaconf import ListConfig
 from omegaconf import OmegaConf
 
-from anemoi.models.migrations import Migrator
+from anemoi.models.migrations import CkptMigrator
 from anemoi.models.utils.config import get_multiple_datasets_config
 from anemoi.utils.testing import GetTestData
 from anemoi.utils.testing import TemporaryDirectoryForTestData
@@ -577,13 +577,13 @@ def benchmark_config(
 
 
 @pytest.fixture(scope="session")
-def migrator() -> Migrator:
-    return Migrator()
+def migrator() -> CkptMigrator:
+    return CkptMigrator()
 
 
 @pytest.fixture
 def global_config_with_checkpoint(
-    migrator: Migrator,
+    migrator: CkptMigrator,
     global_config: tuple[DictConfig, str, str],
     get_test_data: GetTestData,
 ) -> tuple[OmegaConf, str]:
