@@ -7,6 +7,7 @@ defaults:
 - model: transformer_ens
 - task: forecaster
 - training: ensemble
+- migration_state
 - _self_
 
 config_validation: True
