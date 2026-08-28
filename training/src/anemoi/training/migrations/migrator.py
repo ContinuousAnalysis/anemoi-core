@@ -86,7 +86,7 @@ class ConfigMigration(Migration[Config, Config, MigrationVersions]):
 
 class ConfigMigrator(Migrator[ConfigMigration, Config]):
     def __init__(
-        self, migrations: Sequence[ConfigMigration] | None = None, obj_migration_key: str | None = None
+        self, migrations: Sequence[ConfigMigration] | None = None, obj_migration_key: str | None = None,
     ) -> None:
         """Create the migrator object
 
@@ -95,7 +95,6 @@ class ConfigMigrator(Migrator[ConfigMigration, Config]):
         migrations : Sequence[ConfigMigration] | None, default None
             List of migration to execute. If None, get migrations from the current folder.
         """
-
         if migrations is None:
             # remove the ".migrator" at the end to get parent folder as migration package
             migration_pkg, _, _ = __name__.rpartition(".")
@@ -112,7 +111,7 @@ class ConfigMigrator(Migrator[ConfigMigration, Config]):
             raise TypeError("The migration state should be None or str.")
 
         if migration_state is None:
-            return
+            return None
 
         if migration_state not in self._migration_hash_to_name:
             raise IncompatibleConfigException("The config's migration state is not a valid migration.")
@@ -160,7 +159,7 @@ class ConfigMigrator(Migrator[ConfigMigration, Config]):
             return compat_group
         if current_migration_name not in self._migration_refs:
             raise IncompatibleConfigException(
-                f"config cannot be migrated. Extra migrations are registered. ({current_migration_name})"
+                f"config cannot be migrated. Extra migrations are registered. ({current_migration_name})",
             )
         last_registered_migration = self._migration_refs[current_migration_name]
         return compat_group[last_registered_migration + 1 :]
@@ -207,13 +206,13 @@ class ConfigMigrator(Migrator[ConfigMigration, Config]):
             first_incompatible_version = self.get_first_incompatible_version(config)
             raise IncompatibleConfigException(
                 "No compatible migration available: the config is too old. "
-                f"Use a version of anemoi-training < {first_incompatible_version}."
+                f"Use a version of anemoi-training < {first_incompatible_version}.",
             )
         missing_migrations = self.missing_migrations(config)
         for migration in missing_migrations:
             if migration.migrate is None:
                 raise IncompatibleConfigException(
-                    f"Migration {migration.name} cannot be executed. Missing migrate function."
+                    f"Migration {migration.name} cannot be executed. Missing migrate function.",
                 )
             config = migration.migrate(config)
             config[_CONFIG_MIGRATION_KEY] = migration.signature[:8]
@@ -238,6 +237,6 @@ class ConfigMigrator(Migrator[ConfigMigration, Config]):
             first_incompatible_version = self.get_first_incompatible_version(config)
             raise IncompatibleConfigException(
                 "No compatible migration available: the config is too old. "
-                f"Use a version of anemoi-training < {first_incompatible_version}."
+                f"Use a version of anemoi-training < {first_incompatible_version}.",
             )
         return list(self.registered_migrations(config)), list(self.missing_migrations(config))
