@@ -16,7 +16,7 @@ from anemoi.training.migrations.testing import ConfigFromContent
 HERE = Path(__file__).parent
 
 
-def test_config(config_from_content: ConfigFromContent):
+def test_config(config_from_content: ConfigFromContent) -> None:
     content = dedent("""\
     foo:
       bar:
