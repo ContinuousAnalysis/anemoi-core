@@ -84,7 +84,7 @@ class BaseTendencyScaler(BaseScaler):
     def get_level_scaling(self, variable_level: int) -> float: ...
 
     def get_scaling_values(self, **_kwargs) -> torch.Tensor:
-        variable_level_scaling = torch.ones((len(self.data_indices.data.output.full),), dtype=torch.float32)
+        variable_level_scaling = torch.ones((len(self.data_indices.model.output.full),), dtype=torch.float32)
 
         for key, idx in self.data_indices.model.output.name_to_index.items():
             if idx in self.data_indices.model.output.prognostic and self.data_indices.data.output.name_to_index.get(
