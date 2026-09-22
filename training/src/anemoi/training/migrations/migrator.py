@@ -255,10 +255,11 @@ class ConfigMigrator(Migrator[ConfigMigration, Config]):
         missing_migrations = self.missing_migrations(config)
         for migration in missing_migrations:
             if migration.migrate is None:
-                msg = (f"Migration {migration.name} cannot be executed. Missing migrate function.",)
+                msg = f"Migration {migration.name} cannot be executed. Missing migrate function."
                 raise IncompatibleConfigException(msg)
+            config.set_migration(migration)
             config = migration.migrate(config)
-            config[_CONFIG_MIGRATION_KEY] = migration.name_hash
+            config[self._obj_migration_key] = migration.name_hash
         return old_config, config, missing_migrations
 
     def inspect(self, path: str | Path) -> tuple[list[Migration], list[Migration]]:
